@@ -1,0 +1,3 @@
+﻿# automation 模块自身的构建产物与运行日志，不污染根 .gitignore
+target/
+logs/

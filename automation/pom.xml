@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.fanqie</groupId>
+    <artifactId>fanqie-automation</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>番茄免费小说 UI 自动化</name>
+    <description>基于 Appium 2 + Java Client 的番茄免费小说「看视频领免广告时长」UI 自动化</description>
+
+    <properties>
+        <!-- 与 .idea/misc.xml 的 languageLevel="JDK_11" 保持一致 -->
+        <maven.compiler.release>11</maven.compiler.release>
+        <!-- 代码含大量中文字符串与中文文案候选集，Windows 默认 GBK 会编译出乱码导致 text 匹配全部失效 -->
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.encoding>UTF-8</maven.compiler.encoding>
+        <!-- 版本矩阵锁定：java-client 9.5.0 ↔ selenium 4.34.0 为官方兼容矩阵唯一一对一映射 -->
+        <appium.java-client.version>9.5.0</appium.java-client.version>
+        <selenium.bom.version>4.34.0</selenium.bom.version>
+        <slf4j.version>2.0.16</slf4j.version>
+        <!-- 离线单元测试：JUnit 5（Jupiter）+ Surefire 3.x（原生支持 JUnit Platform） -->
+        <junit.jupiter.version>5.10.2</junit.jupiter.version>
+        <maven.surefire.version>3.2.5</maven.surefire.version>
+    </properties>
+
+    <!--
+        强制 pin Selenium 版本的关键：
+        java-client 的 POM 用开放版本区间 [x, 5.0) 声明 selenium 依赖，
+        官方明确警示 "Selenium client does not follow Semantic Versioning,
+        so breaking changes might be introduced even in patches"。
+        不 pin 则某天重建工程会拉到不兼容 patch 版而突然崩掉（NoSuchMethodError）。
+        import scope 的 BOM 会覆盖传递依赖的版本声明，确保任何时候都得到同一套 jar。
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.seleniumhq.selenium</groupId>
+                <artifactId>selenium-bom</artifactId>
+                <version>${selenium.bom.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!--
+            scope 必须是 compile 而非 test：入口是 main() 而非 JUnit。
+            若放 test scope，mvn exec:java 与 fat-jar 都无法访问这些类。
+        -->
+        <dependency>
+            <groupId>io.appium</groupId>
+            <artifactId>java-client</artifactId>
+            <version>${appium.java-client.version}</version>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- SLF4J 简单实现，否则日志静默无输出（java-client 内部用 SLF4J） -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>compile</scope>
+        </dependency>
+
+        <!--
+            JUnit 5（Jupiter）聚合依赖：包含 junit-jupiter-api / -params / -engine。
+            scope=test：仅测试期可见，绝不进入 fat-jar 与 exec:java 运行时 classpath，
+            不影响主程序入口是 main() 的既有约束。
+            本工程所有单元测试均为离线回放（fixture XML + 手写测试替身），
+            不连接真机、不启动 Appium session，因此无需 Mockito 等重型 mock 框架。
+        -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.jupiter.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <!-- 阿里云镜像：国内显著快于 Maven Central 直连（实测可达） -->
+    <repositories>
+        <repository>
+            <id>aliyun-public</id>
+            <name>Aliyun Maven Public Repository</name>
+            <url>https://maven.aliyun.com/repository/public</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
+    <build>
+        <plugins>
+            <!-- 编译插件：强制 release=11 + UTF-8 编码 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <release>11</release>
+                    <encoding>UTF-8</encoding>
+                </configuration>
+            </plugin>
+
+            <!--
+                Surefire 3.x：mvn test 阶段运行 JUnit Platform（Jupiter）测试。
+                2.x 版本无法识别 JUnit 5，必须升到 3.x。UTF-8 编码继承全局 properties。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${maven.surefire.version}</version>
+                <configuration>
+                    <!-- 测试源码同样含大量中文字符串，显式指定 UTF-8 防止 Windows GBK 乱码 -->
+                    <argLine>-Dfile.encoding=UTF-8</argLine>
+                </configuration>
+            </plugin>
+
+            <!-- exec 插件：mvn exec:java 直接运行入口类 -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.4.1</version>
+                <configuration>
+                    <mainClass>com.fanqie.auto.FanqieRunner</mainClass>
+                </configuration>
+            </plugin>
+
+            <!--
+                shade 插件：产出可执行 fat-jar，便于长任务脱离 IDEA 运行。
+                单次运行可能持续 1-3 小时，fat-jar 降低环境脆弱性。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.6.0</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.fanqie.auto.FanqieRunner</mainClass>
+                                </transformer>
+                                <!-- 合并 META-INF/services 文件，Selenium SPI 依赖此机制 -->
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

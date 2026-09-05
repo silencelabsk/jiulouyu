@@ -1,0 +1,6 @@
+<hierarchy rotation="0">
+    <node index="0" class="android.widget.FrameLayout" package="com.dragon.read" bounds="[0,0][1080,2340]" clickable="false" text="" content-desc="">
+        <node index="0" class="android.widget.TextView" package="com.dragon.read" bounds="[980,120][1050,190]" clickable="true" text="关闭" content-desc=""/>
+        <node index="1" class="android.widget.TextView" package="com.dragon.read" bounds="[440,2000][640,2100]" clickable="true" text="关闭" content-desc=""/>
+    </node>
+</hierarchy>

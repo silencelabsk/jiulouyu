@@ -1,0 +1,11 @@
+<hierarchy rotation="0">
+    <node index="0" class="android.widget.FrameLayout" resource-id="com.dragon.read:id/reader_container" package="com.dragon.read" bounds="[0,0][1080,2340]" clickable="false" text="" content-desc="">
+        <node index="0" class="android.view.View" resource-id="com.dragon.read:id/reader_content" package="com.dragon.read" bounds="[0,120][1080,2000]" clickable="false" text="第二章 夜色渐深，山中传来风声。" content-desc=""/>
+        <node index="1" class="android.widget.LinearLayout" resource-id="com.dragon.read:id/reader_toolbar" package="com.dragon.read" bounds="[0,2000][1080,2340]" clickable="false" text="" content-desc="">
+            <node index="0" class="android.widget.TextView" package="com.dragon.read" bounds="[40,2100][200,2200]" clickable="true" text="目录" content-desc=""/>
+            <node index="1" class="android.widget.TextView" package="com.dragon.read" bounds="[240,2100][400,2200]" clickable="true" text="夜间" content-desc=""/>
+            <node index="2" class="android.widget.TextView" package="com.dragon.read" bounds="[440,2100][600,2200]" clickable="true" text="设置" content-desc=""/>
+            <node index="3" class="android.widget.TextView" package="com.dragon.read" bounds="[640,2100][800,2200]" clickable="true" text="听书" content-desc=""/>
+        </node>
+    </node>
+</hierarchy>

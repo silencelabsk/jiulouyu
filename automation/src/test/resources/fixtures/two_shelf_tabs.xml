@@ -1,0 +1,6 @@
+<hierarchy rotation="0">
+    <node index="0" class="android.widget.FrameLayout" package="com.dragon.read" bounds="[0,0][1080,2340]" clickable="false" text="" content-desc="">
+        <node index="0" class="android.widget.TextView" package="com.dragon.read" bounds="[100,300][300,380]" clickable="true" text="书架" content-desc=""/>
+        <node index="1" class="android.widget.TextView" resource-id="com.dragon.read:id/tab_shelf" package="com.dragon.read" bounds="[100,2150][300,2230]" clickable="true" text="书架" content-desc=""/>
+    </node>
+</hierarchy>

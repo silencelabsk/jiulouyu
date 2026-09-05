@@ -1,0 +1,10 @@
+<hierarchy rotation="0">
+    <node index="0" class="android.widget.FrameLayout" resource-id="com.dragon.read:id/tab_shelf" package="com.dragon.read" bounds="[0,0][1080,2340]" clickable="false" text="" content-desc="">
+        <node index="0" class="androidx.recyclerview.widget.RecyclerView" resource-id="com.dragon.read:id/book_recycler" package="com.dragon.read" bounds="[0,200][1080,2000]" clickable="false" text="" content-desc="">
+            <node index="0" class="android.widget.FrameLayout" resource-id="com.dragon.read:id/book_item" package="com.dragon.read" bounds="[40,240][360,700]" clickable="true" text="" content-desc="">
+                <node index="0" class="android.widget.TextView" package="com.dragon.read" bounds="[60,600][340,660]" clickable="false" text="斗破苍穹" content-desc=""/>
+            </node>
+        </node>
+        <node index="1" class="android.widget.TextView" resource-id="com.dragon.read:id/tab_title" package="com.dragon.read" bounds="[400,2120][680,2220]" clickable="true" text="书架" content-desc=""/>
+    </node>
+</hierarchy>

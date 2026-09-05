@@ -1,0 +1,9 @@
+<hierarchy rotation="0">
+    <node index="0" class="android.widget.FrameLayout" package="com.dragon.read" bounds="[0,0][1080,2340]" clickable="false" text="" content-desc="">
+        <node index="0" class="android.widget.LinearLayout" package="com.dragon.read" bounds="[140,900][940,1500]" clickable="false" text="" content-desc="">
+            <node index="0" class="android.widget.TextView" package="com.dragon.read" bounds="[200,980][880,1080]" clickable="false" text="今日已达上限" content-desc=""/>
+            <node index="1" class="android.widget.TextView" package="com.dragon.read" bounds="[200,1120][880,1220]" clickable="false" text="明天再来领取免费时长吧" content-desc=""/>
+            <node index="2" class="android.widget.Button" package="com.dragon.read" bounds="[360,1320][720,1440]" clickable="true" text="我知道了" content-desc=""/>
+        </node>
+    </node>
+</hierarchy>

@@ -1,0 +1,6 @@
+<hierarchy rotation="0">
+    <node index="0" class="android.widget.FrameLayout" package="com.dragon.read" clickable="false" text="" content-desc="">
+        <node index="0" class="android.widget.ImageView" package="com.dragon.read" bounds="[390,1020][690,1320]" clickable="false" text="" content-desc=""/>
+        <node index="1" class="android.widget.ProgressBar" package="com.dragon.read" bounds="[440,1400][640,1440]" clickable="false" text="" content-desc=""/>
+    </node>
+</hierarchy>

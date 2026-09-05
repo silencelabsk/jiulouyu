@@ -1,0 +1,6 @@
+<hierarchy rotation="0">
+    <node index="0" class="android.widget.FrameLayout" resource-id="com.dragon.read:id/reader_container" package="com.dragon.read" bounds="[0,0][1080,2340]" clickable="false" text="" content-desc="">
+        <node index="0" class="android.view.View" resource-id="com.dragon.read:id/reader_content" package="com.dragon.read" bounds="[0,120][1080,2200]" clickable="false" text="第一章 少年出发，前往远方的山城。" content-desc=""/>
+        <node index="1" class="android.widget.TextView" resource-id="com.dragon.read:id/reader_chapter_title" package="com.dragon.read" bounds="[60,40][600,100]" clickable="false" text="第一章 启程" content-desc=""/>
+    </node>
+</hierarchy>
