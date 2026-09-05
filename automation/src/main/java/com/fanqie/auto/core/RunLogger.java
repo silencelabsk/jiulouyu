@@ -131,7 +131,14 @@ public class RunLogger implements DriverAware {
 
     @Override
     public void refreshDriver(AppiumDriver newDriver) {
-        if (newDriver != null) this.driver = newDriver;
+        if (newDriver != null) {
+            this.driver = newDriver;
+            // C2：session 重建后必须复位保活标志。否则 recreate 的 quit()~refreshAll() 窗口内
+            // 心跳线程可能用旧 driver 抛异常把 sessionAlive 置 false，之后永久无法恢复，
+            // 导致心跳保活与 captureSnapshot 落盘双双静默失效。
+            this.sessionAlive.set(true);
+            log.info("[心跳] session 已重建，保活恢复");
+        }
     }
 
     /**
@@ -230,7 +237,9 @@ public class RunLogger implements DriverAware {
      * @param tag 标签（如 "recovery_attempt_1"、"error_ad_close"）
      */
     public void captureSnapshot(String tag) {
-        if (driver == null || !sessionAlive.get()) return;
+        // C2：仅当 driver==null 时跳过；sessionAlive=false 时仍尝试落盘并用 try-catch 吞异常
+        // （现场取证本就应在异常态工作，不能因保活标志为 false 而静默放弃取证）。
+        if (driver == null) return;
         try {
             String timestamp = LocalDateTime.now().format(FILE_TS_FMT);
             String prefix = timestamp + "_" + tag.replaceAll("[^a-zA-Z0-9_\\u4e00-\\u9fa5]", "_");

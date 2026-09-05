@@ -21,17 +21,20 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
+import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -83,11 +86,20 @@ public class AdWatchStateMachine implements DriverAware {
     /** 连续错误计数 */
     private final AtomicInteger consecutiveErrors = new AtomicInteger(0);
     /**
-     * C1：本轮广告奖励是否已计数。
-     * 防止同一轮广告重复累加（无论走真实读取还是兜底估值，一轮只计一次）。
-     * 每轮新视频开始播放（AD_VIDEO_PLAYING）时重置为 false。
+     * M3：广告轮次自增 ID。每真正开始一轮新广告（进入视频流程）时 +1。
+     * <p>
+     * 替代旧的单纯布尔标志 rewardCountedThisRound：旧方案仅在 AD_VIDEO_PLAYING 重置，
+     * 若某轮未经过该态（视频加载快/被误判分流），布尔保留 true → 真实奖励漏计。
+     * 改用自增 roundId + lastCountedRoundId，确保“每真实一轮至多计一次且不漏计”。
      */
-    private final AtomicBoolean rewardCountedThisRound = new AtomicBoolean(false);
+    private final AtomicInteger roundId = new AtomicInteger(0);
+    /** M3：最近一次已计入奖励的 roundId（初值 -1 表示尚无任何轮次计数）。 */
+    private final AtomicInteger lastCountedRoundId = new AtomicInteger(-1);
+
+    /** M1：每日配额耗尽连续命中计数（去抖），需连续多 tick 命中才 latch，避免瞬时误判。 */
+    private final AtomicInteger quotaExhaustedStreak = new AtomicInteger(0);
+    /** M1：连续命中多少个 tick 才确认配额耗尽（去抖阈值）。 */
+    private static final int QUOTA_EXHAUSTED_DEBOUNCE_TICKS = 2;
     /** 当前状态进入时间戳 */
     private volatile long stateEnteredAt = System.currentTimeMillis();
     /** 当前状态 */
@@ -182,13 +194,24 @@ public class AdWatchStateMachine implements DriverAware {
                 stateEnteredAt = System.currentTimeMillis();
             }
 
-            // D4：每日配额耗尽识别 → 优雅收尾退出，不落入 UNKNOWN 反复重试
-            if (!dailyQuotaExhausted && matchesDailyQuotaExhausted(snapshot)) {
-                dailyQuotaExhausted = true;
-                log.info("[StateMachine] 检测到「每日配额耗尽」文案，优雅收尾退出广告子循环 (earned={}min, total={})",
-                        earnedMinutes.get(), totalAdRounds.get());
-                saveProgress();
-                return true;
+            // D4/M1：每日配额耗尽识别（去抖 + 上下文约束）→ 优雅收尾退出，不落入 UNKNOWN 反复重试
+            if (!dailyQuotaExhausted) {
+                if (matchesDailyQuotaExhausted(snapshot)) {
+                    int streak = quotaExhaustedStreak.incrementAndGet();
+                    // M1：需连续 QUOTA_EXHAUSTED_DEBOUNCE_TICKS 个 tick 均命中才 latch，避免瞬时误判
+                    if (streak >= QUOTA_EXHAUSTED_DEBOUNCE_TICKS) {
+                        dailyQuotaExhausted = true;
+                        // M1：可观测——latch 时用 log.error 并记录异常分布，区分“达标结束”与“配额结束”
+                        log.error("[StateMachine] ★ 连续 {} 个 tick 命中「每日配额耗尽」且满足弹窗上下文，判定配额耗尽，优雅收尾退出 (earned={}min, total={})",
+                                streak, earnedMinutes.get(), totalAdRounds.get());
+                        logger.recordError("daily_quota_exhausted");
+                        saveProgress();
+                        return true;
+                    }
+                } else {
+                    // M1：未命中则重置去抖计数（要求“连续”命中）
+                    quotaExhaustedStreak.set(0);
+                }
             }
 
             // 单状态滞留熔断检测
@@ -314,13 +337,19 @@ public class AdWatchStateMachine implements DriverAware {
     public Set<String> getUsedBooks() { return usedBooks; }
 
     /**
-     * D4：判断快照是否命中「每日配额耗尽」文案候选集。
+     * D4/M1：判断快照是否命中「每日配额耗尽」文案候选集。
+     * <p>
+     * M1 上下文约束：命中配额文案时，要求同时存在弹窗型关闭/取消按钮
+     * （commonDismissTexts 或 adCloseTexts），以排除广告卡片/落地页中歧义文案的误判。
      */
     private boolean matchesDailyQuotaExhausted(UiSnapshot snapshot) {
         if (snapshot == null) return false;
         List<String> quotaTexts = locators.dailyQuotaExhaustedTexts();
         if (quotaTexts.isEmpty()) return false;
-        return !snapshot.findByTextContains(quotaTexts).isEmpty();
+        if (snapshot.findByTextContains(quotaTexts).isEmpty()) return false;
+        // M1：上下文约束——伴随弹窗型关闭/取消按钮才视为真正的配额耗尽弹窗
+        return !snapshot.findByTextContains(locators.commonDismissTexts()).isEmpty()
+                || !snapshot.findByTextContains(locators.adCloseTexts()).isEmpty();
     }
 
     // ==================== 熔断判定 ====================
@@ -380,8 +409,12 @@ public class AdWatchStateMachine implements DriverAware {
         });
 
         // SPLASH_AD：优先点击「跳过」按钮，否则等待开屏广告自然消失
+        // C1.3：SPLASH_AD 仅处理冷启动开屏广告，不属于“看激励视频领时长”的计费轮次，
+        // 故有意不计入 currentEntryRound/totalAdRounds（不计数是正确的）。
+        // 检测层已收窄 SPLASH_AD 判定（全屏大面积 + 无右上角关闭 clickable + 开屏专有词），
+        // 确保本处理器不会误吞真正的激励视频关闭（AD_CLOSE_READY）。
         transitionTable.put(PageState.SPLASH_AD, (state, snapshot) -> {
-            log.info("[StateMachine] SPLASH_AD：尝试跳过开屏广告");
+            log.info("[StateMachine] SPLASH_AD：尝试跳过开屏广告（不计入广告轮次）");
             // 策略 1：用 splashSkipTexts 直接匹配点击「跳过」按钮
             List<String> skipTexts = locators.splashSkipTexts();
             boolean clicked = adFlowPage.clickByTextCandidates(skipTexts, snapshot);
@@ -398,9 +431,16 @@ public class AdWatchStateMachine implements DriverAware {
 
         // BOOKSHELF：点书籍条目
         transitionTable.put(PageState.BOOKSHELF, (state, snapshot) -> {
-            log.info("[StateMachine] BOOKSHELF：打开一本书");
-            boolean opened = bookshelfPage.openAnyBook();
+            log.info("[StateMachine] BOOKSHELF：打开下一本未使用的书籍");
+            // N3：与 task 层 per-book 记账统一——用 openNextBook 排除已用书籍，成功后 markBookUsed，
+            // 避免与 D5 轮换记账错位、在少数书间打转。
+            boolean opened = bookshelfPage.openNextBook(usedBooks);
+            if (!opened) {
+                // 兜底：无未使用书籍时打开任意一本，仍保证不把自己丢在书架空转
+                opened = bookshelfPage.openAnyBook();
+            }
             if (opened) {
+                markBookUsed(bookshelfPage.getLastOpenedBookId());
                 return detector.detect(detector.tick());
             }
             return PageState.BOOKSHELF; // 打开失败，状态不变
@@ -432,6 +472,9 @@ public class AdWatchStateMachine implements DriverAware {
                 log.warn("[StateMachine] 点击「观看广告」失败（L1未命中且几何兜底被禁止）");
                 return PageState.AD_CONFIRM_DIALOG;
             }
+            // M3：点击「观看广告」成功即真正开启一轮新广告，递增 roundId（为奖励计数幂等提供依据）。
+            // 覆盖“CONFIRM→（跳过 VIDEO）→REWARD”的分流路径，避免该轮奖励漏计。
+            roundId.incrementAndGet();
             // 等待进入视频播放
             try {
                 return waitSupport.untilState(config.actionTimeoutMs(),
@@ -444,8 +487,9 @@ public class AdWatchStateMachine implements DriverAware {
 
         // AD_VIDEO_PLAYING：不动作，心跳等待
         transitionTable.put(PageState.AD_VIDEO_PLAYING, (state, snapshot) -> {
-            // C1：新一轮视频开始播放，重置「本轮已计数」标志（一轮只计一次）
-            rewardCountedThisRound.set(false);
+            // M3：新一轮视频开始播放，递增 roundId（与 AD_CONFIRM_DIALOG 共同保证每轮至少递增一次），
+            // 供 AD_REWARD_GRANTED 用 lastCountedRoundId 判断“本轮是否已计数”。
+            roundId.incrementAndGet();
             log.info("[StateMachine] AD_VIDEO_PLAYING：不做任何操作，等待倒计时结束");
             // 视频播放期间任何点击都可能误触广告落地页
             adFlowPage.waitCountdownFinished();
@@ -455,17 +499,18 @@ public class AdWatchStateMachine implements DriverAware {
         // AD_CLOSE_READY：点「关闭」
         transitionTable.put(PageState.AD_CLOSE_READY, (state, snapshot) -> {
             log.info("[StateMachine] AD_CLOSE_READY：点击「关闭」按钮");
-            // 记录一轮广告完成
+
+            boolean closed = adFlowPage.clickClose();
+            if (!closed) {
+                log.warn("[StateMachine] 点击「关闭」失败，不计入轮次（避免重试重复计数）");
+                return PageState.AD_CLOSE_READY;
+            }
+            // C4：轮次计数移到 clickClose() 确认关闭成功之后。旧实现进入即无条件自增，
+            // 若 clickClose() 失败返回同状态，主循环重试会再次自增 → 熔断被虚假触发、轮换误判。
             currentEntryRound.incrementAndGet();
             totalAdRounds.incrementAndGet();
             logger.updateAdRound(currentEntryRound.get());
             logger.incrementTotalAdRounds();
-
-            boolean closed = adFlowPage.clickClose();
-            if (!closed) {
-                log.warn("[StateMachine] 点击「关闭」失败");
-                return PageState.AD_CLOSE_READY;
-            }
             // 等待进入后续状态
             try {
                 return waitSupport.untilState(config.actionTimeoutMs(),
@@ -516,25 +561,27 @@ public class AdWatchStateMachine implements DriverAware {
         // AD_REWARD_GRANTED：读取奖励并关闭弹窗
         transitionTable.put(PageState.AD_REWARD_GRANTED, (state, snapshot) -> {
             log.info("[StateMachine] AD_REWARD_GRANTED：读取奖励分钟数");
-            // C1：用 compareAndSet 保证「一轮只计一次」，防止同一轮广告重复累加
-            if (rewardCountedThisRound.compareAndSet(false, true)) {
+            // M3：用 roundId + lastCountedRoundId 保证“每真实一轮至多计一次且不漏计”。
+            // getAndSet 原子地拿到上一次已计数的 roundId：与当前不同则为本轮首次计数。
+            int thisRound = roundId.get();
+            int prevCounted = lastCountedRoundId.getAndSet(thisRound);
+            if (prevCounted != thisRound) {
                 int gained = adFlowPage.readGainedMinutes(snapshot);
                 if (gained > 0) {
                     earnedMinutes.addAndGet(gained);
                     logger.addEarnedMinutes(gained);
-                    log.info("[StateMachine] 本次获得 {} 分钟，累计 {}/{} 分钟",
-                            gained, earnedMinutes.get(), config.targetFreeMinutes());
+                    log.info("[StateMachine] 本次获得 {} 分钟（roundId={}），累计 {}/{} 分钟",
+                            gained, thisRound, earnedMinutes.get(), config.targetFreeMinutes());
                 } else {
-                    // C1：未匹配到数字，按 flow.reward.fallback.minutes 保守兜底累加
-                    // （避免运营文案漂移导致 earnedMinutes 永远无法推进而无法退出）
+                    // M4/C 阶段兜底：readGainedMinutes 无奖励语义命中时返回 0，按 flow.reward.fallback.minutes 保守累加
                     int fallback = config.rewardFallbackMinutes();
                     earnedMinutes.addAndGet(fallback);
                     logger.addEarnedMinutes(fallback);
-                    log.warn("[StateMachine] 未从快照中提取到奖励分钟数，按兜底估值累加 {} 分钟，累计 {}/{} 分钟",
-                            fallback, earnedMinutes.get(), config.targetFreeMinutes());
+                    log.warn("[StateMachine] 未从快照中提取到奖励分钟数，按兜底估值累加 {} 分钟（roundId={}），累计 {}/{} 分钟",
+                            fallback, thisRound, earnedMinutes.get(), config.targetFreeMinutes());
                 }
             } else {
-                log.info("[StateMachine] AD_REWARD_GRANTED：本轮奖励已计数，跳过重复累加");
+                log.info("[StateMachine] AD_REWARD_GRANTED：本轮（roundId={}）奖励已计数，跳过重复累加", thisRound);
             }
 
             // 关闭奖励弹窗
@@ -577,9 +624,15 @@ public class AdWatchStateMachine implements DriverAware {
             UiSnapshot afterSnap = detector.tick();
             PageState afterState = detector.detect(afterSnap);
             if (afterState == PageState.READER_MENU) {
-                // 第一次点击未收起，尝试点击屏幕中心
-                log.debug("[StateMachine] READER_MENU：第一次点击未收起，尝试点击屏幕中心");
-                gestures.tapAtRatio(0.50, 0.50);
+                // C3.3：第二次不要用屏幕正中央 (0.5,0.5)——那是番茄 toggle 菜单热区，会反复开关菜单。
+                // 改用 systemBack() 收起菜单，语义上等价于「返回」，能稳定回到 READER。
+                log.debug("[StateMachine] READER_MENU：右侧热区点击未收起，改用 systemBack() 返回收起菜单");
+                try {
+                    if (driver != null) driver.navigate().back();
+                } catch (Exception e) {
+                    log.warn("[StateMachine] READER_MENU：systemBack() 异常，回落右侧热区点击: {}", e.getMessage());
+                    gestures.tapAtRatio(0.85, 0.50);
+                }
                 afterSnap = detector.tick();
                 afterState = detector.detect(afterSnap);
             }
@@ -637,13 +690,19 @@ public class AdWatchStateMachine implements DriverAware {
                 log.info("[StateMachine] 从进度文件恢复: earnedMinutes={}, totalAdRounds={}",
                         savedEarned, savedTotal);
             }
-            // D5：恢复 per-book 维度进度（已用书籍标识集合）
+            // D5/C5.3/N4：恢复 per-book 维度进度（已用书籍标识集合）
+            // C5.3：增加时效维度——仅当持久化日期为「当天」时才恢复 usedBooks，
+            //       否则清空（跨天残留会导致续跑首次轮换即无书可换）。旧文件缺 lastUpdateDate 字段时保守清空。
+            String savedDate = props.getProperty("lastUpdateDate", "");
+            boolean sameDay = !savedDate.isEmpty() && savedDate.equals(LocalDate.now().toString());
             String savedBooks = props.getProperty("usedBooks", "");
-            if (savedBooks != null && !savedBooks.trim().isEmpty()) {
-                for (String id : savedBooks.split(",")) {
-                    if (!id.trim().isEmpty()) usedBooks.add(id.trim());
+            if (sameDay && savedBooks != null && !savedBooks.trim().isEmpty()) {
+                for (String id : decodeUsedBooks(savedBooks)) {
+                    usedBooks.add(id);
                 }
-                log.info("[StateMachine] 从进度文件恢复已用书籍 {} 本: {}", usedBooks.size(), usedBooks);
+                log.info("[StateMachine] 从进度文件恢复当天已用书籍 {} 本: {}", usedBooks.size(), usedBooks);
+            } else if (savedBooks != null && !savedBooks.trim().isEmpty()) {
+                log.info("[StateMachine] 进度文件的已用书籍非当天（savedDate={}），按跨天清空处理，重新遍历全部书籍", savedDate);
             }
         } catch (Exception e) {
             log.warn("[StateMachine] 加载进度文件失败（将从零开始）: {}", e.getMessage());
@@ -659,8 +718,11 @@ public class AdWatchStateMachine implements DriverAware {
             Properties props = new Properties();
             props.setProperty("earnedMinutes", String.valueOf(earnedMinutes.get()));
             props.setProperty("totalAdRounds", String.valueOf(totalAdRounds.get()));
-            // D5：持久化 per-book 维度进度（已用书籍标识集合，逗号分隔）
-            props.setProperty("usedBooks", String.join(",", usedBooks));
+            // D5/N4：持久化 per-book 维度进度（已用书籍标识集合）
+            // N4：每个 id 经 URLEncoder 编码后用 "|" 分隔，避免书名（content-desc/text 原文）含逗号被拆错
+            props.setProperty("usedBooks", encodeUsedBooks(usedBooks));
+            // C5.3：记录持久化日期，loadProgress 据此判断 usedBooks 是否为当天（跨天清空）
+            props.setProperty("lastUpdateDate", LocalDate.now().toString());
             props.setProperty("lastUpdate", String.valueOf(System.currentTimeMillis()));
             try (OutputStreamWriter writer = new OutputStreamWriter(
                     new FileOutputStream(progressFile.toFile()), StandardCharsets.UTF_8)) {
@@ -672,12 +734,61 @@ public class AdWatchStateMachine implements DriverAware {
     }
 
     /**
+     * N4：将已用书籍集合编码为持久化字符串（每个 id 经 URL 编码后用 "|" 分隔）。
+     * <p>
+     * 旧实现用 "," 直接 join，书名（content-desc/text 原文）含逗号时会被拆错。
+     */
+    private String encodeUsedBooks(Set<String> books) {
+        List<String> encoded = new ArrayList<>();
+        for (String id : books) {
+            if (id == null || id.trim().isEmpty()) continue;
+            try {
+                encoded.add(URLEncoder.encode(id.trim(), StandardCharsets.UTF_8.name()));
+            } catch (Exception e) {
+                // 编码失败安全降级：跳过该 id
+                log.debug("[StateMachine] usedBooks id 编码失败，跳过: {}", id);
+            }
+        }
+        return String.join("|", encoded);
+    }
+
+    /**
+     * N4：解码持久化的已用书籍集合。
+     * <p>
+     * 新格式：每个 id 经 URLEncoder 编码后用 "|" 分隔。
+     * 向后兼容：若无 "|" 分隔符则回落按 "," 拆分（旧格式）。
+     * 单个 token 解析失败时安全跳过（降级为空集的一部分）。
+     */
+    private List<String> decodeUsedBooks(String raw) {
+        List<String> result = new ArrayList<>();
+        if (raw == null || raw.trim().isEmpty()) return result;
+        String[] tokens = raw.contains("|") ? raw.split("\\|") : raw.split(",");
+        for (String token : tokens) {
+            String t = token.trim();
+            if (t.isEmpty()) continue;
+            try {
+                String decoded = URLDecoder.decode(t, StandardCharsets.UTF_8.name());
+                if (!decoded.trim().isEmpty()) result.add(decoded.trim());
+            } catch (Exception e) {
+                // 解析失败安全降级：跳过该 token
+                log.debug("[StateMachine] usedBooks token 解码失败，跳过: {}", t);
+            }
+        }
+        return result;
+    }
+
+    /**
      * 清除进度文件（新一轮完整运行前调用）。
      */
     public void resetProgress() {
         earnedMinutes.set(0);
         totalAdRounds.set(0);
         currentEntryRound.set(0);
+        // M3：重置奖励计数幂等相关的轮次 ID
+        roundId.set(0);
+        lastCountedRoundId.set(-1);
+        // M1：重置配额耗尽去抖计数
+        quotaExhaustedStreak.set(0);
         // D5：清除 per-book 进度（已用书籍集合），使新一轮运行可重新遍历全部书籍
         usedBooks.clear();
         // D4：重置每日配额耗尽标志

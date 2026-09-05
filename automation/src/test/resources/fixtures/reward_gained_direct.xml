@@ -1,0 +1,6 @@
+<hierarchy rotation="0">
+    <!-- M4 正例：单节点内含明确奖励语义「获得」+「30分钟」→ readGainedMinutes 应返回 30 -->
+    <node index="0" class="android.widget.FrameLayout" package="com.dragon.read" bounds="[0,0][1080,2340]" clickable="false" text="" content-desc="">
+        <node index="0" class="android.widget.TextView" package="com.dragon.read" bounds="[200,1000][880,1140]" clickable="false" text="获得30分钟免广告时长" content-desc=""/>
+    </node>
+</hierarchy>

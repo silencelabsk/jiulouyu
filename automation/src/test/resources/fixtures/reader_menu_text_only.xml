@@ -1,0 +1,10 @@
+<hierarchy rotation="0">
+    <!-- C3.5 正例：无阅读页 resource-id 锚点，但存在大面积正文节点（areaRatio>0.6）+ 菜单工具栏文案。
+         纯文案兜底分支收窄后仍应判为 READER_MENU（大面积正文条件满足）。 -->
+    <node index="0" class="android.widget.FrameLayout" package="com.dragon.read" bounds="[0,0][1080,2340]" clickable="false" text="" content-desc="">
+        <node index="0" class="android.view.View" package="com.dragon.read" bounds="[0,120][1080,2100]" clickable="false" text="" content-desc=""/>
+        <node index="1" class="android.widget.TextView" package="com.dragon.read" bounds="[100,2150][250,2250]" clickable="true" text="目录" content-desc=""/>
+        <node index="2" class="android.widget.TextView" package="com.dragon.read" bounds="[400,2150][550,2250]" clickable="true" text="夜间" content-desc=""/>
+        <node index="3" class="android.widget.TextView" package="com.dragon.read" bounds="[700,2150][850,2250]" clickable="true" text="设置" content-desc=""/>
+    </node>
+</hierarchy>

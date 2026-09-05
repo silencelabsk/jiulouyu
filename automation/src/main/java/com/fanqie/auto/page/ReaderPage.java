@@ -78,7 +78,7 @@ public class ReaderPage extends BasePage {
         // 若只等 READER 会白等到超时。把广告态纳入同一次等待是稳定性的关键细节。
         try {
             PageState result = waitSupport.untilState(config.actionTimeoutMs(),
-                    PageState.READER, PageState.AD_ENTRY_PROMPT, PageState.AD_CONFIRM_DIALOG,
+                    PageState.READER, PageState.READER_MENU, PageState.AD_ENTRY_PROMPT, PageState.AD_CONFIRM_DIALOG,
                     PageState.AD_VIDEO_PLAYING, PageState.AD_CLOSE_READY,
                     PageState.CHAPTER_END, PageState.COMMON_POPUP);
             logger.updateState(result);
@@ -105,7 +105,7 @@ public class ReaderPage extends BasePage {
 
         try {
             PageState result = waitSupport.untilState(config.actionTimeoutMs(),
-                    PageState.READER, PageState.AD_ENTRY_PROMPT, PageState.AD_CONFIRM_DIALOG,
+                    PageState.READER, PageState.READER_MENU, PageState.AD_ENTRY_PROMPT, PageState.AD_CONFIRM_DIALOG,
                     PageState.CHAPTER_END, PageState.COMMON_POPUP);
             logger.updateState(result);
             return result;
@@ -147,8 +147,9 @@ public class ReaderPage extends BasePage {
                 UiSnapshot chapterSnapshot = detector.tick();
                 return clickNextChapterButton(chapterSnapshot);
             }
-            if (afterTurn != PageState.READER) {
-                // 遇到了非阅读页状态（广告/弹窗等），返回 false 让上层处理
+            if (!afterTurn.isReaderFamily()) {
+                // 遇到了非阅读页家族状态（广告/弹窗等），返回 false 让上层处理
+                // C3.4：READER_MENU 是 READER 的可自愈子态（工具栏短暂可见），不应当作异常退出
                 log.info("[ReaderPage] 翻页过程中遇到状态: {}，暂停跳章", afterTurn);
                 return false;
             }
@@ -238,7 +239,7 @@ public class ReaderPage extends BasePage {
             // 等待进入 READER 状态
             try {
                 PageState result = waitSupport.untilState(config.actionTimeoutMs(),
-                        PageState.READER, PageState.AD_ENTRY_PROMPT, PageState.COMMON_POPUP);
+                        PageState.READER, PageState.READER_MENU, PageState.AD_ENTRY_PROMPT, PageState.COMMON_POPUP);
                 logger.updateState(result);
                 return true;
             } catch (Exception e) {
@@ -246,7 +247,7 @@ public class ReaderPage extends BasePage {
                 UiSnapshot afterSnapshot = detector.tick();
                 PageState afterState = detector.detect(afterSnapshot);
                 logger.updateState(afterState);
-                return afterState == PageState.READER;
+                return afterState.isReaderFamily();
             }
         }
 
@@ -256,7 +257,7 @@ public class ReaderPage extends BasePage {
         if (clicked) {
             log.info("[ReaderPage] 通过文案匹配点击「下一章」");
             try {
-                waitSupport.untilState(config.actionTimeoutMs(), PageState.READER, PageState.COMMON_POPUP);
+                waitSupport.untilState(config.actionTimeoutMs(), PageState.READER, PageState.READER_MENU, PageState.COMMON_POPUP);
                 return true;
             } catch (Exception e) {
                 return false;

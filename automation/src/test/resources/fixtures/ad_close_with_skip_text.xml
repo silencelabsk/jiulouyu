@@ -1,0 +1,9 @@
+<hierarchy rotation="0">
+    <!-- C1 回归：带裸「跳过」文案且右上角存在小面积关闭 clickable 的广告关闭页。
+         裸「跳过」已归 ad.close.text，且右上角关闭特征使 SPLASH_AD 排他条件不成立，
+         故必须判为 AD_CLOSE_READY，绝不能误判为 SPLASH_AD。 -->
+    <node index="0" class="android.widget.FrameLayout" package="com.dragon.read" bounds="[0,0][1080,2340]" clickable="false" text="" content-desc="">
+        <node index="0" class="android.widget.ImageView" package="com.dragon.read" bounds="[0,0][1080,2340]" clickable="true" text="" content-desc="广告"/>
+        <node index="1" class="android.widget.TextView" package="com.dragon.read" bounds="[900,120][1050,220]" clickable="true" text="跳过" content-desc=""/>
+    </node>
+</hierarchy>

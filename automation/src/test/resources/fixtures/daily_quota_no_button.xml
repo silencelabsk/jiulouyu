@@ -1,0 +1,8 @@
+<hierarchy rotation="0">
+    <!-- M1 上下文约束反例：命中配额文案「今日已达上限」，但不存在任何弹窗型关闭/取消按钮
+         （commonDismissTexts / adCloseTexts 均未命中）。上下文约束应使其 NOT 判为配额耗尽，
+         排除广告卡片/落地页中歧义文案造成的误判提前终止。 -->
+    <node index="0" class="android.widget.FrameLayout" package="com.dragon.read" bounds="[0,0][1080,2340]" clickable="false" text="" content-desc="">
+        <node index="0" class="android.widget.TextView" package="com.dragon.read" bounds="[200,980][880,1080]" clickable="false" text="今日已达上限" content-desc=""/>
+    </node>
+</hierarchy>

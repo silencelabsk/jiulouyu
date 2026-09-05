@@ -108,7 +108,9 @@ public class RecoveryHandler implements DriverAware {
             boolean dismissed = dismissPopup(snapshot);
             if (dismissed) {
                 PageState afterDismiss = detector.detect(detector.tick());
-                if (!afterDismiss.isAbnormal()) {
+                // N2：第1级恢复成功判定收窄为显式锚点白名单（与第2级一致），
+                // 不再用 !isAbnormal()——后者未覆盖新增状态，会把 READER_MENU/SPLASH_AD/APP_LAUNCHING 等误判为“已恢复”。
+                if (afterDismiss.isReaderFamily() || afterDismiss == PageState.BOOKSHELF) {
                     log.info("[Recovery] 弹窗关闭成功，恢复到状态: {}", afterDismiss);
                     consecutiveFailures.set(0);
                     logger.resetConsecutiveErrors();

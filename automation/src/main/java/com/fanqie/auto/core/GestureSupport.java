@@ -40,7 +40,13 @@ public class GestureSupport implements DriverAware {
 
     @Override
     public void refreshDriver(AppiumDriver newDriver) {
-        if (newDriver != null) this.driver = newDriver;
+        if (newDriver != null) {
+            this.driver = newDriver;
+            // M2：与 StateDetector 对齐——driver 刷新后屏幕尺寸缓存失效，
+            // 防止 session 重建或横屏/折叠屏旋转后沿用旧尺寸导致比例坐标失真。
+            // （同时使 invalidateScreenSizeCache() 被实际调用，消除死 API）
+            invalidateScreenSizeCache();
+        }
     }
 
     /**

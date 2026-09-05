@@ -47,6 +47,20 @@ class AdFlowPageTest {
     }
 
     @Test
+    @DisplayName("M4：单节点「获得30分钟」（奖励语义）→ readGainedMinutes 返回 30")
+    void readGainedMinutes_rewardSemanticDirect() {
+        assertEquals(30, adFlowPage.readGainedMinutes(snapshotOf("reward_gained_direct.xml")));
+    }
+
+    @Test
+    @DisplayName("M4：仅有「剩余90分钟」（非奖励语义）→ readGainedMinutes 返回 0而非高估 90")
+    void readGainedMinutes_onlyRemainingReturnsZero() {
+        // M4 核心：旧实现用正则全局取最大值会把「剩余90分钟」当奖励，严重高估；
+        // 修复后无奖励语义命中时返回 0（交由状态机兜底估值处理）。
+        assertEquals(0, adFlowPage.readGainedMinutes(snapshotOf("reward_remaining_only.xml")));
+    }
+
+    @Test
     @DisplayName("无「N分钟」文案的阅读页快照 → readGainedMinutes 返回 0")
     void readGainedMinutes_noNumberReturnsZero() {
         assertEquals(0, adFlowPage.readGainedMinutes(snapshotOf("reader.xml")));

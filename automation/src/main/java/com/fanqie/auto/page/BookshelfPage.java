@@ -257,11 +257,12 @@ public class BookshelfPage extends BasePage {
     private boolean confirmLeftBookshelf() {
         try {
             PageState result = waitSupport.untilState(config.actionTimeoutMs(),
-                    PageState.READER, PageState.COMMON_POPUP, PageState.AD_CONFIRM_DIALOG,
+                    PageState.READER, PageState.READER_MENU, PageState.COMMON_POPUP, PageState.AD_CONFIRM_DIALOG,
                     PageState.APP_LAUNCHING);
             logger.updateState(result);
-            if (result == PageState.READER) {
-                log.info("[BookshelfPage] 成功进入阅读页");
+            // C3.4：打开书后工具栏常短暂可见（READER_MENU），同样属于“已离开书架进入阅读页”
+            if (result.isReaderFamily()) {
+                log.info("[BookshelfPage] 成功进入阅读页: {}", result);
             } else {
                 log.info("[BookshelfPage] 打开书籍后进入状态: {}（非 READER 但已离开书架）", result);
             }

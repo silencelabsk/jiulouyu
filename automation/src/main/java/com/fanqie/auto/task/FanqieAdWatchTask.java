@@ -129,8 +129,8 @@ public class FanqieAdWatchTask implements Task, DriverAware {
         UiSnapshot readerSnapshot = detector.tick();
         PageState readerState = detector.detect(readerSnapshot);
         logger.updateState(readerState);
-        if (readerState != PageState.READER) {
-            log.warn("[Task] 打开书籍后状态为 {} 而非 READER，尝试恢复", readerState);
+        if (!readerState.isReaderFamily()) {
+            log.warn("[Task] 打开书籍后状态为 {} 而非阅读页家族，尝试恢复", readerState);
             boolean recovered = recoveryHandler.recover(readerState);
             if (!recovered) {
                 log.error("[Task] 恢复失败，任务终止");
@@ -178,6 +178,7 @@ public class FanqieAdWatchTask implements Task, DriverAware {
             }
 
             // === 内层：翻页 pagesPerCycle 次 ===
+            pagesLoop:
             for (int page = 1; page <= pagesPerCycle; page++) {
                 log.info("[Task] 翻页 {}/{} (外层循环 {})", page, pagesPerCycle, cycle);
 
@@ -187,7 +188,8 @@ public class FanqieAdWatchTask implements Task, DriverAware {
                 // 根据翻页后的状态决策
                 switch (afterTurn) {
                     case READER:
-                        // 正常翻页，继续
+                    case READER_MENU:
+                        // 正常翻页（READER_MENU 是 READER 的可自愈子态，工具栏短暂可见），继续
                         break;
 
                     case AD_ENTRY_PROMPT:
@@ -206,7 +208,12 @@ public class FanqieAdWatchTask implements Task, DriverAware {
                         // 广告子循环结束后确认回到 READER
                         ensureBackToReader();
                         // D5：本书广告轮次达上限且全局目标未达 → 回书架换下一本书继续
-                        rotateBookIfNeeded();
+                        // C5.2：轮换失败可能把自己丢在书架，破坏「子循环后必在 READER」不变量；
+                        // 返回 false 时重新确认处于阅读页家族（含 READER_MENU），否则触发恢复，仍失败则跳过本轮翻页
+                        if (!rotateBookIfNeeded() && !confirmInReaderFamily()) {
+                            log.warn("[Task] 轮换后无法回到阅读页家族，跳过本轮翻页");
+                            break pagesLoop;
+                        }
                         break;
 
                     case CHAPTER_END:
@@ -239,7 +246,7 @@ public class FanqieAdWatchTask implements Task, DriverAware {
                 }
 
                 // 检查底部广告入口（即使翻页后状态为 READER，底部可能有入口浮层）
-                if (afterTurn == PageState.READER) {
+                if (afterTurn.isReaderFamily()) {
                     UiSnapshot currentSnapshot = detector.getCachedSnapshot();
                     if (currentSnapshot != null && readerPage.hasBottomRewardEntry(currentSnapshot)) {
                         // 检查是否需要进入广告流程
@@ -251,7 +258,11 @@ public class FanqieAdWatchTask implements Task, DriverAware {
                                 stateMachine.runAdSubLoop();
                                 ensureBackToReader();
                                 // D5：广告子循环后按需轮换书籍
-                                rotateBookIfNeeded();
+                                // C5.2：轮换失败时重新确认阅读页家族，仍失败则跳过本轮翻页
+                                if (!rotateBookIfNeeded() && !confirmInReaderFamily()) {
+                                    log.warn("[Task] 轮换后无法回到阅读页家族，跳过本轮翻页");
+                                    break pagesLoop;
+                                }
                             }
                         }
                     }
@@ -267,7 +278,11 @@ public class FanqieAdWatchTask implements Task, DriverAware {
                     stateMachine.runAdSubLoop();
                     ensureBackToReader();
                     // D5：广告子循环后按需轮换书籍
-                    rotateBookIfNeeded();
+                    // C5.2：轮换失败时重新确认阅读页家族，仍失败则优雅收尾退出外层循环
+                    if (!rotateBookIfNeeded() && !confirmInReaderFamily()) {
+                        log.warn("[Task] 轮换后无法回到阅读页家族，优雅收尾退出外层循环");
+                        break;
+                    }
                 }
             }
         }
@@ -369,7 +384,7 @@ public class FanqieAdWatchTask implements Task, DriverAware {
         UiSnapshot snapshot = detector.tick();
         PageState state = detector.detect(snapshot);
 
-        if (state == PageState.READER) {
+        if (state.isReaderFamily()) {
             logger.updateState(state);
             return;
         }
@@ -392,7 +407,7 @@ public class FanqieAdWatchTask implements Task, DriverAware {
         // 尝试等待回到 READER
         try {
             PageState result = waitSupport.untilState(config.actionTimeoutMs(),
-                    PageState.READER, PageState.BOOKSHELF);
+                    PageState.READER, PageState.READER_MENU, PageState.BOOKSHELF);
             logger.updateState(result);
             if (result == PageState.BOOKSHELF) {
                 bookshelfPage.openAnyBook();
@@ -402,6 +417,30 @@ public class FanqieAdWatchTask implements Task, DriverAware {
             log.warn("[Task] 无法回到 READER，尝试恢复流程");
             recoveryHandler.recover(state);
         }
+    }
+
+    /**
+     * C5.2：轮换失败后的状态守卫——重新确认当前处于阅读页家族（READER / READER_MENU）。
+     * <p>
+     * rotateToNextBook 失败时可能停在书架（已 navigateBackToShelf 但无未用书），
+     * 直接继续翻页会破坏「子循环后必在 READER」不变量。本方法先 tick+detect 确认，
+     * 若不在阅读页家族则触发恢复并再次确认。
+     *
+     * @return true=已处于阅读页家族, false=恢复后仍无法回到阅读页家族
+     */
+    private boolean confirmInReaderFamily() {
+        UiSnapshot snapshot = detector.tick();
+        PageState state = detector.detect(snapshot);
+        if (state.isReaderFamily()) {
+            logger.updateState(state);
+            return true;
+        }
+        log.warn("[Task] 轮换后未处于阅读页家族（当前={}），尝试恢复", state);
+        recoveryHandler.recover(state);
+        snapshot = detector.tick();
+        state = detector.detect(snapshot);
+        logger.updateState(state);
+        return state.isReaderFamily();
     }
 
     // ==================== D5：多本书轮换 ====================
@@ -444,7 +483,23 @@ public class FanqieAdWatchTask implements Task, DriverAware {
         // 打开下一本未使用的书（排除已用书籍集合）
         boolean opened = bookshelfPage.openNextBook(stateMachine.getUsedBooks());
         if (!opened) {
-            log.info("[Task] 书架中已无未使用的书籍，轮换结束");
+            // C5.1：openNextBook 失败（书架书全在 usedBooks 或滚动到底无未用书）时兜底——
+            // 先回顶（下滑）再打开任意一本书，避免停在书架空转、破坏「子循环后必在 READER」不变量。
+            log.info("[Task] openNextBook 未找到未使用书籍，回顶后兜底打开任意一本书");
+            try {
+                gestures.swipeDown();
+            } catch (Exception e) {
+                log.debug("[Task] 回顶下滑异常（忽略）: {}", e.getMessage());
+            }
+            opened = bookshelfPage.openAnyBook();
+            if (opened) {
+                stateMachine.markBookUsed(bookshelfPage.getLastOpenedBookId());
+                log.info("[Task] 兜底打开书籍成功: {}", bookshelfPage.getLastOpenedBookId());
+                return true;
+            }
+            // 兜底仍失败：显式恢复到书架锚点，尽力不把自己丢在书架空转
+            log.warn("[Task] 兜底打开书籍仍失败，触发 BOOKSHELF 恢复");
+            recoveryHandler.recover(PageState.BOOKSHELF);
             return false;
         }
         stateMachine.markBookUsed(bookshelfPage.getLastOpenedBookId());

@@ -57,9 +57,22 @@ public class StateDetector implements DriverAware {
     public void refreshDriver(AppiumDriver newDriver) {
         if (newDriver != null) {
             this.driver = newDriver;
-            // E3：driver 刷新后屏幕尺寸缓存失效，下次 tick 重新获取
-            this.cachedScreenSize = null;
+            // E3/M2：driver 刷新后屏幕尺寸缓存失效，下次 tick 重新获取
+            invalidateScreenSizeCache();
+            // N1：清除旧 session 的快照缓存，防止 getCachedSnapshot() 读到旧 session
+            // 的 UI 树做点击决策（调用方均已对 null 安全）。
+            this.cachedSnapshot = null;
+            this.snapshotTimestamp = 0L;
+            this.lastPageSourceMs = 0L;
         }
+    }
+
+    /**
+     * M2：屏幕尺寸缓存失效统一入口。driver 刷新与 tick 自愈均调用本方法，
+     * 消除“尺寸缓存只在 refreshDriver 失效”导致横屏/折叠屏旋转后比例判定失真的问题。
+     */
+    private void invalidateScreenSizeCache() {
+        this.cachedScreenSize = null;
     }
 
     /**
@@ -92,7 +105,19 @@ public class StateDetector implements DriverAware {
             log.info("[StateDetector] 屏幕尺寸首次获取并缓存: {}x{}",
                     cachedScreenSize.getWidth(), cachedScreenSize.getHeight());
         }
-        cachedSnapshot = new UiSnapshot(xml, cachedScreenSize.getWidth(), cachedScreenSize.getHeight());
+        UiSnapshot snapshot = new UiSnapshot(xml, cachedScreenSize.getWidth(), cachedScreenSize.getHeight());
+
+        // M2：零成本自愈——若快照中任一节点 bounds 超出缓存尺寸（横屏激励视频/折叠屏旋转），
+        // 说明缓存尺寸已过期，失效并重取，避免所有比例判定失真。
+        if (isScreenSizeStale(snapshot, cachedScreenSize)) {
+            invalidateScreenSizeCache();
+            cachedScreenSize = driver.manage().window().getSize();
+            log.info("[StateDetector] 检测到节点越界，屏幕尺寸缓存已自愈重取: {}x{}",
+                    cachedScreenSize.getWidth(), cachedScreenSize.getHeight());
+            snapshot = new UiSnapshot(xml, cachedScreenSize.getWidth(), cachedScreenSize.getHeight());
+        }
+
+        cachedSnapshot = snapshot;
         snapshotTimestamp = System.currentTimeMillis();
 
         log.debug("[StateDetector] tick完成: getPageSource={}ms, XML={}KB, 节点数={}",
@@ -241,10 +266,13 @@ public class StateDetector implements DriverAware {
             return PageState.AD_ENTRY_PROMPT;
         }
 
-        // ★ SPLASH_AD：开屏广告跳过按钮 → 必须优先于 AD_CLOSE_READY（避免冷启动开屏广告被误判）
-        // 判定条件：命中 splashSkipTexts 且不命中任何广告流程中间态文案（上面已 return 排除了）
-        if (!snapshot.findByTextContains(locators.splashSkipTexts()).isEmpty()) {
-            log.debug("[StateDetector] 命中开屏广告跳过文案，判定为 SPLASH_AD");
+        // ★ SPLASH_AD：开屏广告跳过 → 仅冷启动全屏开屏广告命中（C1 修复）
+        // splashSkipTexts 已收窄为开屏专有词（“跳过广告”等，裸“跳过”已归 ad.close.text），
+        // 此处再叠加两个排他前置条件（全屏大面积 + 无右上角关闭 clickable），
+        // 确保带“跳过”文案的广告关闭页/可跳过激励视频不会被误判为 SPLASH_AD。
+        if (!snapshot.findByTextContains(locators.splashSkipTexts()).isEmpty()
+                && isSplashAdExclusive(snapshot)) {
+            log.debug("[StateDetector] 命中开屏专有跳过文案且满足全屏/无右上角关闭特征，判定为 SPLASH_AD");
             return PageState.SPLASH_AD;
         }
 
@@ -271,10 +299,12 @@ public class StateDetector implements DriverAware {
             return PageState.BOOKSHELF;
         }
 
-        // READER_MENU 文案兜底：resource-id 未命中阅读页锚点时，
-        // 通过菜单工具栏特征文案单独判定（正文自绘导致 reader resource-id 可能缺失）
-        if (!snapshot.findByTextContains(locators.readerMenuTexts()).isEmpty()) {
-            log.debug("[StateDetector] resource-id 未命中阅读页但菜单文案存在，判定为 READER_MENU");
+        // READER_MENU 文案兜底：resource-id 未命中阅读页锚点时（正文自绘导致 reader id 可能缺失），
+        // C3 收窄：仅当同时存在大面积正文节点（areaRatio>0.6）时才判 READER_MENU，
+        // 否则回落后续判定，防止书架顶栏“设置”等被误判为阅读页菜单。
+        if (!snapshot.findByTextContains(locators.readerMenuTexts()).isEmpty()
+                && hasLargeAreaNode(snapshot, 0.6)) {
+            log.debug("[StateDetector] resource-id 未命中阅读页但菜单文案+大面积正文存在，判定为 READER_MENU");
             return PageState.READER_MENU;
         }
 
@@ -363,5 +393,46 @@ public class StateDetector implements DriverAware {
         }
 
         return null; // 无命中，返回 UNKNOWN
+    }
+
+    /**
+     * C1：SPLASH_AD 的排他前置判定——全屏大面积 + 无右上角关闭 clickable。
+     * <p>
+     * 只有真正的冷启动全屏开屏广告才应命中，避免与激励视频关闭页（AD_CLOSE_READY）混淆：
+     * ② 存在全屏大面积节点（areaRatio>0.6，开屏广告整屏铺满）；
+     * ③ 不存在 AD_CLOSE_READY 的右上角小 clickable 特征（复用 detectByGeometry 同一判定，
+     *    否则更可能是激励视频关闭按钮）。
+     */
+    private boolean isSplashAdExclusive(UiSnapshot snapshot) {
+        // 条件②：存在全屏大面积节点
+        if (!hasLargeAreaNode(snapshot, 0.6)) {
+            return false;
+        }
+        // 条件③：不存在右上角小 clickable 关闭特征（与 detectByGeometry 判定一致）
+        boolean hasTopRightClose = !snapshot.findClickableInRegion(0.8, 1.0, 0.0, 0.2, 0.15).isEmpty();
+        return !hasTopRightClose;
+    }
+
+    /**
+     * 是否存在面积占比超过 threshold 的大面积节点。
+     * 供 SPLASH_AD 排他判定与 READER_MENU 纯文案兜底收窄复用。
+     */
+    private boolean hasLargeAreaNode(UiSnapshot snapshot, double threshold) {
+        int screenW = snapshot.getScreenWidth();
+        int screenH = snapshot.getScreenHeight();
+        return snapshot.nodes().stream()
+                .filter(UiNode::isHasBounds)
+                .anyMatch(n -> n.getBounds().areaRatio(screenW, screenH) > threshold);
+    }
+
+    /**
+     * M2：判断快照中是否存在越界节点（bounds 超出缓存屏幕尺寸），用于尺寸缓存自愈。
+     */
+    private boolean isScreenSizeStale(UiSnapshot snapshot, Dimension size) {
+        int w = size.getWidth();
+        int h = size.getHeight();
+        return snapshot.nodes().stream()
+                .filter(UiNode::isHasBounds)
+                .anyMatch(n -> n.getBounds().getRight() > w || n.getBounds().getBottom() > h);
     }
 }

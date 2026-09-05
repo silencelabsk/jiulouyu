@@ -1,0 +1,7 @@
+<hierarchy rotation="0">
+    <!-- M4 反例：仅有「剩余90分钟」这类非奖励语义（排除词命中），无任何奖励动词。
+         旧实现会取全局最大值 90 造成严重高估；修复后应返回 0（交由兜底估值处理）。 -->
+    <node index="0" class="android.widget.FrameLayout" package="com.dragon.read" bounds="[0,0][1080,2340]" clickable="false" text="" content-desc="">
+        <node index="0" class="android.widget.TextView" package="com.dragon.read" bounds="[200,1000][880,1140]" clickable="false" text="剩余90分钟" content-desc=""/>
+    </node>
+</hierarchy>

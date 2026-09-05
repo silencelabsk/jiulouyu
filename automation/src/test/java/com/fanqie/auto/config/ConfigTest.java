@@ -88,7 +88,11 @@ class ConfigTest {
         LocatorRegistry locators = new LocatorRegistry();
 
         assertTrue(locators.shelfTabTexts().contains("书架"), "书架 Tab 候选应含「书架」");
-        assertTrue(locators.splashSkipTexts().contains("跳过"), "开屏跳过候选应含「跳过」");
+        // C1.2：splash.skip.text 已收窄为开屏专有词，移除裸「跳过」（裸「跳过」归 ad.close.text），
+        // 避免带「跳过」文案的广告关闭页/可跳过激励视频被误判为 SPLASH_AD 抢占 AD_CLOSE_READY。
+        assertTrue(locators.splashSkipTexts().contains("跳过广告"), "开屏跳过候选应含专有词「跳过广告」");
+        assertFalse(locators.splashSkipTexts().contains("跳过"),
+                "C1.2：开屏跳过候选不应再含裸「跳过」（已收窄，裸「跳过」归 ad.close.text）");
         assertTrue(locators.readerMenuTexts().contains("目录"), "阅读菜单候选应含「目录」");
         assertTrue(locators.adWatchTexts().contains("观看广告"), "观看广告候选应含「观看广告」");
         assertTrue(locators.adCloseTexts().contains("关闭"), "关闭文案候选应含「关闭」");

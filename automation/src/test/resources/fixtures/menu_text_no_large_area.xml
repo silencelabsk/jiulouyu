@@ -1,0 +1,9 @@
+<hierarchy rotation="0">
+    <!-- C3.5 反例：命中菜单文案（目录/设置）但无任何大面积正文节点（areaRatio>0.6），
+         且无阅读页 resource-id 锚点。收窄后纯文案兜底不再成立，必须 NOT READER_MENU
+         （模拟书架顶栏/弹层「设置」被误判为阅读页菜单的场景）。 -->
+    <node index="0" class="android.widget.FrameLayout" package="com.dragon.read" bounds="[200,900][880,1300]" clickable="false" text="" content-desc="">
+        <node index="0" class="android.widget.TextView" package="com.dragon.read" bounds="[240,940][400,1020]" clickable="true" text="目录" content-desc=""/>
+        <node index="1" class="android.widget.TextView" package="com.dragon.read" bounds="[600,940][760,1020]" clickable="true" text="设置" content-desc=""/>
+    </node>
+</hierarchy>

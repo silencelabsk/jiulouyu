@@ -78,6 +78,17 @@ public enum PageState {
         return this == UNKNOWN || this == RECOVERY_NEEDED || this == COMMON_POPUP;
     }
 
+    /**
+     * C3：是否属于「阅读页家族」——READER 或其可自愈子态 READER_MENU。
+     * <p>
+     * 番茄打开书后工具栏默认短暂显示（READER_MENU），这是高频正常路径，
+     * 不应被当作异常而 recover()+back() 退出阅读页。task 层与检测层用本方法
+     * 统一把 READER_MENU 视作 READER 的可自愈子态，语义跨层保持一致。
+     */
+    public boolean isReaderFamily() {
+        return this == READER || this == READER_MENU;
+    }
+
     @Override
     public String toString() {
         return name() + "(" + description + ")";

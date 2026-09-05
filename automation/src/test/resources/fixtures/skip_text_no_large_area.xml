@@ -1,0 +1,7 @@
+<hierarchy rotation="0">
+    <!-- C1 排他条件②反例：命中开屏专有「跳过广告」文案，但无任何全屏大面积节点（areaRatio>0.6）。
+         SPLASH_AD 排他前置条件不满足，不应判为 SPLASH_AD；裸「跳过」子串使其归入 AD_CLOSE_READY。 -->
+    <node index="0" class="android.widget.FrameLayout" package="com.dragon.read" bounds="[200,900][880,1300]" clickable="false" text="" content-desc="">
+        <node index="0" class="android.widget.TextView" package="com.dragon.read" bounds="[600,940][820,1020]" clickable="true" text="跳过广告" content-desc=""/>
+    </node>
+</hierarchy>

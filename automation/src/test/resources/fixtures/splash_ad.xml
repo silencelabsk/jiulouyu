@@ -1,6 +1,7 @@
 <hierarchy rotation="0">
+    <!-- 真正的冷启动全屏开屏广告：全屏大面积节点 + 开屏专有“跳过广告”文案 + 跳过按钮在右下角（非右上角关闭热区） -->
     <node index="0" class="android.widget.FrameLayout" package="com.dragon.read" bounds="[0,0][1080,2340]" clickable="false" text="" content-desc="">
         <node index="0" class="android.widget.ImageView" package="com.dragon.read" bounds="[0,0][1080,2340]" clickable="true" text="" content-desc="广告"/>
-        <node index="1" class="android.widget.TextView" package="com.dragon.read" bounds="[900,120][1050,220]" clickable="true" text="跳过" content-desc=""/>
+        <node index="1" class="android.widget.TextView" package="com.dragon.read" bounds="[820,2120][1040,2220]" clickable="true" text="跳过广告" content-desc=""/>
     </node>
 </hierarchy>

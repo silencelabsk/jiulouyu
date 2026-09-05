@@ -42,6 +42,20 @@ public class AdFlowPage extends BasePage {
     private final StateDetector detector;
     private final WaitSupport waitSupport;
 
+    /**
+     * M4：奖励语义关键词——只有命中这些动词/名词的文案才视为本次奖励。
+     * 可根据实际运营文案调整。
+     */
+    private static final List<String> REWARD_KEYWORDS =
+            java.util.Arrays.asList("获得", "领取", "奖励", "到账", "已领", "恭喜", "发放", "赠");
+
+    /**
+     * M4：非奖励语义（排除词）——命中时即使带数字也不当作奖励，
+     * 避免把「剩余90分钟」误计为本次获得导致严重高估。
+     */
+    private static final List<String> NEGATIVE_MINUTE_KEYWORDS =
+            java.util.Arrays.asList("剩余", "还剩", "仅剩", "倒计时", "尚需");
+
     public AdFlowPage(AppiumDriver driver, AutomationConfig config, LocatorRegistry locators,
                       GestureSupport gestures, RunLogger logger,
                       StateDetector detector, WaitSupport waitSupport) {
@@ -285,48 +299,92 @@ public class AdFlowPage extends BasePage {
     /**
      * 从快照中提取本次获得的免广告分钟数。
      * <p>
-     * 使用 LocatorRegistry.getRewardRegex()（{@code (\d+)\s*分钟}）匹配 UI 树中的文本。
+     * <b>M4 修复：只认带奖励语义的文案。</b>旧实现用正则 {@code (\d+)\s*分钟} 全局取最大值，
+     * 会把「剩余90分钟」等非奖励文案当作奖励，造成严重高估。
      * <p>
-     * <b>取值策略：取所有匹配中的最大值。</b>
-     * 理由：快照中可能同时存在多个含数字+「分钟」的节点（如「已获得30分钟」和「还剩90分钟」），
-     * 取最大值通常是本次获得的奖励数额。若实际场景中发现取值不准，可在此处调整策略。
+     * 新策略：
+     * <ul>
+     *   <li>逐节点扫描，跳过带「剩余/还剩」等排除词的节点；</li>
+     *   <li>仅当节点自身（text/desc）或同一父节点下的兄弟节点带奖励语义（如「恭喜获得」标题）时，
+     *       才从该节点提取数字（兼容「标题+数值」分离的弹窗）；</li>
+     *   <li>若无明确奖励语义命中，<b>返回 0</b>（交由状态机 rewardFallbackMinutes 兜底），
+     *       而非取可能严重偏大的全局最大值。</li>
+     * </ul>
      *
      * @param snapshot 当次 UI 快照
-     * @return 本次获得的分钟数，未匹配到返回 0
+     * @return 本次获得的分钟数，无奖励语义命中时返回 0
      */
     public int readGainedMinutes(UiSnapshot snapshot) {
         if (snapshot == null) return 0;
-
+    
         String regex = locators.getRewardRegex();
-        List<String> matches = snapshot.extractByRegex(regex);
-
-        if (matches.isEmpty()) {
-            log.debug("[AdFlowPage] 未从快照中匹配到奖励分钟数 (regex={})", regex);
-            return 0;
-        }
-
-        // 从匹配结果中提取数字，取最大值
+        Pattern rewardPattern = Pattern.compile(regex);
         Pattern numPattern = Pattern.compile("(\\d+)");
+        List<UiNode> nodes = snapshot.nodes();
+    
         int maxMinutes = 0;
-        for (String match : matches) {
-            Matcher m = numPattern.matcher(match);
-            if (m.find()) {
-                try {
-                    int value = Integer.parseInt(m.group(1));
-                    if (value > maxMinutes) {
-                        maxMinutes = value;
+        boolean matched = false;
+        for (UiNode node : nodes) {
+            String text = node.getText();
+            // M4：跳过带明确非奖励语义（剩余/还剩等）的节点
+            if (containsAny(text, NEGATIVE_MINUTE_KEYWORDS)
+                    || containsAny(node.getContentDesc(), NEGATIVE_MINUTE_KEYWORDS)) {
+                continue;
+            }
+            // M4：节点自身或同父兄弟节点带奖励语义时才计入（兼容标题与数值分离的弹窗）
+            boolean rewardContext = containsAny(text, REWARD_KEYWORDS)
+                    || containsAny(node.getContentDesc(), REWARD_KEYWORDS)
+                    || hasRewardSemanticSibling(nodes, node);
+            if (!rewardContext) continue;
+    
+            Matcher rm = rewardPattern.matcher(text);
+            while (rm.find()) {
+                Matcher nm = numPattern.matcher(rm.group());
+                if (nm.find()) {
+                    try {
+                        int value = Integer.parseInt(nm.group(1));
+                        matched = true;
+                        if (value > maxMinutes) maxMinutes = value;
+                    } catch (NumberFormatException ignore) {
+                        // 忽略无法解析的数字
                     }
-                } catch (NumberFormatException e) {
-                    // 忽略无法解析的数字
                 }
             }
         }
-
-        if (maxMinutes > 0) {
-            log.info("[AdFlowPage] 从快照中提取到奖励: {} 分钟（匹配数={}，取最大值）",
-                    maxMinutes, matches.size());
+    
+        if (!matched || maxMinutes <= 0) {
+            // M4：无明确奖励语义命中，返回 0 交由兜底估值处理，绝不取全局最大值
+            log.debug("[AdFlowPage] 未从快照中匹配到带奖励语义的分钟数，返回 0 交由兜底处理 (regex={})", regex);
+            return 0;
         }
+    
+        log.info("[AdFlowPage] 从快照中提取到奖励(带奖励语义): {} 分钟", maxMinutes);
         return maxMinutes;
+    }
+    
+    /**
+     * M4：text 是否包含 keywords 中任一关键词（null/空安全）。
+     */
+    private boolean containsAny(String text, List<String> keywords) {
+        if (text == null || text.isEmpty()) return false;
+        return keywords.stream().anyMatch(text::contains);
+    }
+    
+    /**
+     * M4：判断节点的同一父节点下是否存在带奖励语义的兄弟节点。
+     * 用于兼容「恭喜获得」标题与「30分钟」数值分处不同节点的奖励弹窗。
+     */
+    private boolean hasRewardSemanticSibling(List<UiNode> nodes, UiNode node) {
+        int parentIdx = node.getParentIndex();
+        if (parentIdx < 0 || parentIdx >= nodes.size()) return false;
+        for (UiNode other : nodes) {
+            if (other.getParentIndex() != parentIdx) continue;
+            if (containsAny(other.getText(), REWARD_KEYWORDS)
+                    || containsAny(other.getContentDesc(), REWARD_KEYWORDS)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
