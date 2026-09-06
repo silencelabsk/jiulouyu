@@ -154,6 +154,8 @@ public class AppiumUiAutomator2DriverFactory implements DriverFactory {
         options.setCapability("appium:disableIdLocatorAutocompletion", true);
         // UiAutomator2 Server 启动超时：华为设备首启慢，给足 60s
         options.setCapability("appium:uiautomator2ServerLaunchTimeout", config.uia2ServerLaunchTimeoutMs());
+        // UiAutomator2 Server 安装超时：Appium 默认 20s 对华为太短（首装 + 「监控 ADB 安装应用」弹窗），放宽到配置值（默认 120s）
+        options.setCapability("appium:uiautomator2ServerInstallTimeout", config.uia2ServerInstallTimeoutMs());
 
         // 保持屏幕常亮
         if (config.keepScreenOn()) {

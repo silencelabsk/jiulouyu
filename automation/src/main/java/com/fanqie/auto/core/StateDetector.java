@@ -239,6 +239,18 @@ public class StateDetector implements DriverAware {
             return PageState.READER;
         }
 
+        // 真机校准：部分设备阅读页 resource-id 全为混淆值、无 reader 锚，
+        // 改用 dump 校准得到的混淆容器 id 识别阅读页（菜单文案命中则 READER_MENU，否则 READER）。
+        for (String cid : locators.readerContainerIds()) {
+            if (!snapshot.findByResourceId(cid, false).isEmpty()) {
+                List<String> menuTexts = locators.readerMenuTexts();
+                if (!menuTexts.isEmpty() && !snapshot.findByTextContains(menuTexts).isEmpty()) {
+                    return PageState.READER_MENU;
+                }
+                return PageState.READER;
+            }
+        }
+
         return null; // 无命中，交给下一优先级
     }
 
@@ -306,6 +318,16 @@ public class StateDetector implements DriverAware {
                 && hasLargeAreaNode(snapshot, 0.6)) {
             log.debug("[StateDetector] resource-id 未命中阅读页但菜单文案+大面积正文存在，判定为 READER_MENU");
             return PageState.READER_MENU;
+        }
+
+        // READER 兜底（真机校准）：章节进度形如「1/21388」+ 全屏大面积正文 → 判定阅读页。
+        // 用于 resource-id 混淆且菜单文案不常驻的场景，进度正则是抗版本漂移的稳定信号；
+        // 置于本方法末尾：ad/popup/chapter/shelf 等语义文案已在前面优先命中，不会误抢。
+        String readerProg = locators.readerProgressRegex();
+        if (!readerProg.isEmpty() && !snapshot.extractByRegex(readerProg).isEmpty()
+                && hasLargeAreaNode(snapshot, 0.6)) {
+            log.debug("[StateDetector] 命中章节进度正则且存在全屏正文，判定为 READER");
+            return PageState.READER;
         }
 
         return null; // 无命中

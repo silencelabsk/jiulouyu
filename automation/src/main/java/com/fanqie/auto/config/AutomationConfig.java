@@ -142,6 +142,15 @@ public class AutomationConfig {
         return getLong("appium.uia2.server.launch.timeout.ms", 60000L);
     }
 
+    /**
+     * UiAutomator2 Server APK 推送并安装到设备的超时（毫秒）。
+     * Appium 默认 20000ms，对华为/鸿蒙过短（首装慢 + 「监控 ADB 安装应用」弹窗阻塞），
+     * 故单独暴露此配置，默认放宽到 120000ms。
+     */
+    public long uia2ServerInstallTimeoutMs() {
+        return getLong("appium.uia2.server.install.timeout.ms", 120000L);
+    }
+
     public boolean skipServerInstallation() {
         return getBoolean("appium.skip.server.installation", false);
     }

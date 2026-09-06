@@ -128,23 +128,21 @@ public class DryRunProbe implements DriverAware {
         // === 步骤 3：打开一本书进入阅读页 ===
         log.info("[DryRun] 步骤 3：尝试打开一本书（仅允许切 Tab 与点开书籍两类无害操作）");
 
-        // 确保在书架页
-        if (shelfState != PageState.BOOKSHELF) {
-            log.info("[DryRun] 当前不在书架页，尝试切换...");
-            // 只尝试点击书架 Tab（无害操作）
-            List<String> shelfTexts = locators.shelfTabTexts();
-            List<UiNode> tabHits = shelfSnapshot.findByTextContains(shelfTexts);
-            if (!tabHits.isEmpty()) {
-                UiNode tab = tabHits.get(0);
-                if (tab.isHasBounds()) {
-                    gestures.tapAtPixel(tab.getBounds().centerX(), tab.getBounds().centerY());
-                    log.info("[DryRun] 已点击书架 Tab");
-                    try {
-                        Thread.sleep(config.pollIntervalMs() * 4);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                    }
-                }
+        // 确保真正落在书架页：BOOKSHELF 检测依赖底部「书架」Tab 文案，书城/短剧等主页同样含该文案，
+        // 冷启可能停在书城/短剧却被误判为书架。故无条件点一次底部「书架」Tab（已在书架时为幂等空操作）。
+        List<String> shelfTexts = locators.shelfTabTexts();
+        List<UiNode> tabHits = shelfSnapshot.findByTextContains(shelfTexts);
+        UiNode shelfTab = tabHits.stream()
+                .filter(UiNode::isHasBounds)
+                .max(java.util.Comparator.comparingInt(n -> n.getBounds().centerY()))
+                .orElse(null);
+        if (shelfTab != null) {
+            gestures.tapAtPixel(shelfTab.getBounds().centerX(), shelfTab.getBounds().centerY());
+            log.info("[DryRun] 已无条件点击底部书架 Tab: bounds={}", shelfTab.getBounds());
+            try {
+                Thread.sleep(config.pollIntervalMs() * 4);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
             }
         }
 
@@ -172,6 +170,23 @@ public class DryRunProbe implements DriverAware {
             printNodeStatistics(readerSnapshot, "阅读页");
             // 打印关键词节点
             printKeywordNodes(readerSnapshot, "阅读页");
+
+            // === 步骤 4b：连翻 2 页后再抓一次，观察底部「看视频领时长」广告是否随翻页出现 ===
+            log.info("[DryRun] 步骤 4b：连续翻页后再次抓取阅读页快照（观察底部广告）");
+            for (int p = 0; p < 2; p++) {
+                gestures.turnPageNext();
+                try {
+                    Thread.sleep(config.pollIntervalMs() * 4);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            UiSnapshot afterTurn = detector.tick();
+            PageState afterTurnState = detector.detect(afterTurn);
+            log.info("[DryRun] 翻页后状态: {}, 节点数: {}", afterTurnState, afterTurn.size());
+            saveSnapshot(afterTurn, "dryrun-reader-afterturn");
+            printKeywordNodes(afterTurn, "翻页后阅读页");
         } else {
             log.warn("[DryRun] 未能打开书籍，仅输出书架页的探测结果");
         }
@@ -191,32 +206,57 @@ public class DryRunProbe implements DriverAware {
         int screenH = snapshot.getScreenHeight();
         int screenW = snapshot.getScreenWidth();
 
-        // 查找 clickable=true 且带 content-desc 或 text 的节点，位于屏幕主体区域
-        List<UiNode> candidates = snapshot.nodes().stream()
+        // 优先按书封容器 resource-id 命中（真机校准：番茄书封 clickable 但 text/content-desc 均为空）
+        // 与主流程 BookshelfPage 对齐：收集 e3l 格子后跳过短剧、优先文字小说，避免 dry-run 误开短剧导致快照无效
+        List<String> bookIds = locators.bookItemIds();
+        UiNode book = null;
+        List<UiNode> cells = snapshot.nodes().stream()
                 .filter(UiNode::isClickable)
                 .filter(UiNode::isHasBounds)
-                .filter(n -> n.hasContentDesc() || n.hasText())
+                .filter(n -> bookIds.contains(n.getResourceId()))
                 .filter(n -> {
                     double cy = (double) n.getBounds().centerY() / screenH;
-                    return cy > 0.10 && cy < 0.85; // 排除状态栏和底部 Tab
+                    return cy > 0.10 && cy < 0.90;
                 })
                 .filter(n -> {
                     double ratio = n.getBounds().areaRatio(screenW, screenH);
-                    return ratio > 0.005 && ratio < 0.15; // 合理面积
-                })
-                .filter(n -> {
-                    // 排除书架 Tab 文案
-                    String text = n.getText() + n.getContentDesc();
-                    return locators.shelfTabTexts().stream().noneMatch(text::contains);
+                    return ratio > 0.01 && ratio < 0.30;
                 })
                 .collect(java.util.stream.Collectors.toList());
+        UiNode chosen = chooseNovelCell(snapshot, cells);
+        if (chosen != null) {
+            book = chosen;
+            log.info("[DryRun] 按 resource-id 命中书封(已跳过短剧): {}", book.getResourceId());
+        }
 
-        if (candidates.isEmpty()) {
+        // 退回基于文案的旧策略：clickable=true 且带 content-desc 或 text，位于屏幕主体区域
+        if (book == null) {
+            List<UiNode> candidates = snapshot.nodes().stream()
+                    .filter(UiNode::isClickable)
+                    .filter(UiNode::isHasBounds)
+                    .filter(n -> n.hasContentDesc() || n.hasText())
+                    .filter(n -> {
+                        double cy = (double) n.getBounds().centerY() / screenH;
+                        return cy > 0.10 && cy < 0.85; // 排除状态栏和底部 Tab
+                    })
+                    .filter(n -> {
+                        double ratio = n.getBounds().areaRatio(screenW, screenH);
+                        return ratio > 0.005 && ratio < 0.15; // 合理面积
+                    })
+                    .filter(n -> {
+                        // 排除书架 Tab 文案
+                        String text = n.getText() + n.getContentDesc();
+                        return locators.shelfTabTexts().stream().noneMatch(text::contains);
+                    })
+                    .collect(java.util.stream.Collectors.toList());
+            if (!candidates.isEmpty()) book = candidates.get(0);
+        }
+
+        if (book == null) {
             log.warn("[DryRun] 书架中未找到可点击的书籍条目");
             return false;
         }
 
-        UiNode book = candidates.get(0);
         log.info("[DryRun] 点击书籍条目: desc='{}', text='{}', bounds={}",
                 book.getContentDesc(), book.getText(), book.getBounds());
         gestures.tapAtPixel(book.getBounds().centerX(), book.getBounds().centerY());
@@ -333,5 +373,58 @@ public class DryRunProbe implements DriverAware {
 
     private double pct(long part, long total) {
         return total == 0 ? 0.0 : (double) part / total * 100.0;
+    }
+
+    /**
+     * 与 BookshelfPage.chooseNovelCell 对齐：从 e3l 书封格候选中跳过短剧、优先文字小说。
+     */
+    private UiNode chooseNovelCell(UiSnapshot snapshot, List<UiNode> cells) {
+        if (cells == null || cells.isEmpty()) return null;
+        java.util.regex.Pattern sd = compileSafe(locators.bookShortDramaRegex());
+        java.util.regex.Pattern novel = compileSafe(locators.bookNovelRegex());
+        UiNode best = null;
+        boolean bestNovel = false;
+        long bestArea = -1;
+        for (UiNode cell : cells) {
+            String txt = collectTextWithin(snapshot, cell);
+            if (sd != null && sd.matcher(txt).find()) {
+                log.info("[DryRun] 跳过疑似短剧/视频卡片: bounds={}", cell.getBounds());
+                continue;
+            }
+            boolean isNovel = novel != null && novel.matcher(txt).find();
+            long area = cell.getBounds().area();
+            if ((isNovel && !bestNovel) || (isNovel == bestNovel && area > bestArea)) {
+                best = cell;
+                bestNovel = isNovel;
+                bestArea = area;
+            }
+        }
+        return best;
+    }
+
+    private String collectTextWithin(UiSnapshot snapshot, UiNode cell) {
+        UiNode.Rect b = cell.getBounds();
+        StringBuilder sb = new StringBuilder();
+        for (UiNode n : snapshot.nodes()) {
+            if (!n.isHasBounds()) continue;
+            if (!n.hasText() && !n.hasContentDesc()) continue;
+            UiNode.Rect nb = n.getBounds();
+            int cx = nb.centerX();
+            int cy = nb.centerY();
+            if (cx >= b.getLeft() && cx <= b.getRight() && cy >= b.getTop() && cy <= b.getBottom()) {
+                sb.append(n.getText()).append(' ').append(n.getContentDesc()).append(' ');
+            }
+        }
+        return sb.toString();
+    }
+
+    private java.util.regex.Pattern compileSafe(String regex) {
+        if (regex == null || regex.isEmpty()) return null;
+        try {
+            return java.util.regex.Pattern.compile(regex);
+        } catch (Exception e) {
+            log.warn("[DryRun] 正则编译失败，忽略: '{}' ({})", regex, e.getMessage());
+            return null;
+        }
     }
 }

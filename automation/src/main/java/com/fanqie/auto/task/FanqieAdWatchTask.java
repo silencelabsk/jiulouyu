@@ -116,34 +116,51 @@ public class FanqieAdWatchTask implements Task, DriverAware {
         }
 
         // === 阶段 2：打开一本书进入阅读页 ===
-        log.info("[Task] 阶段 2：打开书架中的一本书");
-        boolean opened = bookshelfPage.openAnyBook();
-        if (!opened) {
-            log.error("[Task] 无法打开任何书籍，任务终止");
-            return false;
-        }
-        // D5：标记首本书已用（per-book 进度）
-        stateMachine.markBookUsed(bookshelfPage.getLastOpenedBookId());
-
-        // 确认进入 READER 状态
-        UiSnapshot readerSnapshot = detector.tick();
-        PageState readerState = detector.detect(readerSnapshot);
-        logger.updateState(readerState);
-        if (!readerState.isReaderFamily()) {
-            log.warn("[Task] 打开书籍后状态为 {} 而非阅读页家族，尝试恢复", readerState);
+        // 真机校准：番茄书架混排「短剧」视频，误点会落入竖屏视频页而非阅读器。
+        // 故循环选书：若打开后判定为视频/短剧页 → 返回首页并重新点底部「书架」Tab → 换一本（排除已试）。
+        log.info("[Task] 阶段 2：打开书架中的一本书（自动跳过短剧/视频页）");
+        java.util.Set<String> triedIds = new java.util.LinkedHashSet<>();
+        int maxPickAttempts = config.maxRecoveryRetry() + 3;
+        PageState readerState = PageState.UNKNOWN;
+        boolean enteredReader = false;
+        for (int pick = 0; pick < maxPickAttempts; pick++) {
+            boolean opened = triedIds.isEmpty()
+                    ? bookshelfPage.openAnyBook()
+                    : bookshelfPage.openNextBook(triedIds);
+            if (!opened) {
+                log.warn("[Task] 第 {} 次选书未能打开新条目（书架可能已无未试条目）", pick + 1);
+                break;
+            }
+            String bookId = bookshelfPage.getLastOpenedBookId();
+            triedIds.add(bookId);
+            UiSnapshot pickSnapshot = detector.tick();
+            readerState = detector.detect(pickSnapshot);
+            if (readerState.isReaderFamily()) {
+                logger.updateState(readerState);
+                stateMachine.markBookUsed(bookId);
+                log.info("[Task] 成功进入小说阅读页: {}", readerState);
+                enteredReader = true;
+                break;
+            }
+            if (isVideoPage(pickSnapshot)) {
+                log.warn("[Task] 打开『{}』后落入视频/短剧页，返回首页并重新点击底部「书架」换一本",
+                        truncateId(bookId));
+                if (!backHomeAndReopenShelf()) {
+                    log.warn("[Task] 返回首页并重点书架失败，终止选书");
+                    break;
+                }
+                continue;
+            }
+            log.warn("[Task] 打开书籍后状态为 {}（非阅读页家族、非视频），尝试恢复后重选", readerState);
             boolean recovered = recoveryHandler.recover(readerState);
             if (!recovered) {
                 log.error("[Task] 恢复失败，任务终止");
                 return false;
             }
-            // 恢复后重新尝试打开书
-            opened = bookshelfPage.openAnyBook();
-            if (!opened) {
-                log.error("[Task] 恢复后仍无法打开书籍，任务终止");
-                return false;
-            }
-            // D5：标记本书已用（per-book 进度）
-            stateMachine.markBookUsed(bookshelfPage.getLastOpenedBookId());
+        }
+        if (!enteredReader) {
+            log.error("[Task] 多次尝试仍无法进入小说阅读页（书架可能多为短剧/视频），任务终止");
+            return false;
         }
         log.info("[Task] 已进入阅读页，开始主循环");
 
@@ -303,12 +320,13 @@ public class FanqieAdWatchTask implements Task, DriverAware {
      * 处理可能遇到的开屏广告、通用弹窗等中间状态。
      */
     private boolean launchAndNavigateToShelf() {
-        // 激活 App（不硬编码 Activity，用 mobile: activateApp 按包名激活）
+        // 每次运行先 kill 再冷启（restartApp = terminateApp + activateApp）：
+        // 番茄冷启后可能停在「短剧」等上次使用的 Tab，故随后强制点一次底部「书架」 Tab。
         try {
-            gestures.activateApp(config.appPackage());
-            log.info("[Task] App 已激活: {}", config.appPackage());
+            gestures.restartApp(config.appPackage());
+            log.info("[Task] App 已 kill 并重新启动（冷启）: {}", config.appPackage());
         } catch (Exception e) {
-            log.error("[Task] 激活 App 失败: {}", e.getMessage());
+            log.error("[Task] 重启 App 失败: {}", e.getMessage());
             return false;
         }
 
@@ -320,9 +338,10 @@ public class FanqieAdWatchTask implements Task, DriverAware {
             logger.updateState(launchState);
             log.info("[Task] App 启动后状态: {}", launchState);
 
-            // 如果直接到达书架，无需额外处理
+            // 即便检测到 BOOKSHELF，也可能因底部「书架」Tab 文案在书城/短剧等主页共享而误判，
+            // 故始终主动切一次书架 Tab，确保真正落在书架页再选书（已在书架时为幂等空操作）。
             if (launchState == PageState.BOOKSHELF) {
-                return true;
+                return bookshelfPage.switchToShelfTab();
             }
 
             // 处理中间状态
@@ -363,7 +382,7 @@ public class FanqieAdWatchTask implements Task, DriverAware {
             // 多次尝试后仍未到书架
             UiSnapshot finalSnapshot = detector.tick();
             PageState finalState = detector.detect(finalSnapshot);
-            if (finalState == PageState.BOOKSHELF) return true;
+            if (finalState == PageState.BOOKSHELF) return bookshelfPage.switchToShelfTab();
 
             // 尝试切换到书架 Tab
             log.info("[Task] 尝试主动切换到书架 Tab");
@@ -374,6 +393,68 @@ public class FanqieAdWatchTask implements Task, DriverAware {
             // 超时后尝试直接切换到书架
             return bookshelfPage.switchToShelfTab();
         }
+    }
+
+    /**
+     * 真机校准：判断当前快照是否为「短剧/视频」页（点开短剧后落入的竖屏播放页）。
+     * <p>
+     * 依据：整页 text/content-desc 命中短剧特征正则（第N集/全N集/选集/观看全集/看剧/漫剧/第N季 等）。
+     * 小说阅读器正文不会出现这些标记，故可用于区分「误开视频」与「正常进入阅读器」。
+     */
+    private boolean isVideoPage(UiSnapshot snapshot) {
+        if (snapshot == null) return false;
+        String regex = locators.bookShortDramaRegex();
+        if (regex == null || regex.isEmpty()) return false;
+        java.util.regex.Pattern p;
+        try {
+            p = java.util.regex.Pattern.compile(regex);
+        } catch (Exception e) {
+            log.warn("[Task] 短剧正则编译失败，跳过视频页判定: {}", e.getMessage());
+            return false;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (com.fanqie.auto.core.UiNode n : snapshot.nodes()) {
+            if (n.hasText()) sb.append(n.getText()).append(' ');
+            if (n.hasContentDesc()) sb.append(n.getContentDesc()).append(' ');
+        }
+        return p.matcher(sb.toString()).find();
+    }
+
+    /**
+     * 返回首页（退出视频播放页）并重新点击底部「书架」Tab。
+     * <p>
+     * 用户诉求：误开短剧/视频后，先回到含底部导航栏的主页面，再强制点一次「书架」Tab 以回到书架换书。
+     *
+     * @return true=已回到书架, false=未能回到可导航主页面或切换书架失败
+     */
+    private boolean backHomeAndReopenShelf() {
+        int maxBack = config.maxRecoveryRetry() + 1;
+        for (int i = 0; i < maxBack; i++) {
+            UiSnapshot s = detector.tick();
+            PageState st = detector.detect(s);
+            if (st == PageState.BOOKSHELF) {
+                break; // 已在含书架锚点的主页面，直接走下面的强制点 Tab
+            }
+            try {
+                driver.navigate().back();
+            } catch (Exception e) {
+                log.warn("[Task] 返回首页 back() 异常: {}", e.getMessage());
+                break;
+            }
+            try {
+                Thread.sleep(config.pollIntervalMs() * 2);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        return bookshelfPage.switchToShelfTab();
+    }
+
+    /** 截断书籍标识用于日志（避免过长标题刷屏）。 */
+    private String truncateId(String s) {
+        if (s == null) return "";
+        return s.length() <= 20 ? s : s.substring(0, 20) + "...";
     }
 
     /**

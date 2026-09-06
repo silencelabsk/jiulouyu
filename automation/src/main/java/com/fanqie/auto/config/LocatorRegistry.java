@@ -107,6 +107,19 @@ public class LocatorRegistry {
     }
 
     public List<String> shelfTabTexts() { return getCandidates("shelf.tab.text"); }
+    /**
+     * 书封容器的稳定 resource-id 候选集（真机 dump 校准）。
+     * 书封 clickable 但 text/content-desc 为空时，靠此 id 识别书籍条目。
+     */
+    public List<String> bookItemIds() { return getCandidates("book.item.id"); }
+    /** 阅读页章节进度文本正则（如「1/21388」），用于在 resource-id 混淆时识别阅读页 */
+    public String readerProgressRegex() { return locatorsProps.getProperty("reader.progress.regex", ""); }
+    /** 阅读页根容器混淆 resource-id 候选集（真机 dump 校准） */
+    public List<String> readerContainerIds() { return getCandidates("reader.container.id"); }
+    /** 短剧/视频内容识别正则（命中则选书时跳过，避免误开短剧） */
+    public String bookShortDramaRegex() { return locatorsProps.getProperty("book.shortdrama.regex", ""); }
+    /** 文字小说内容识别正则（命中则优先选取） */
+    public String bookNovelRegex() { return locatorsProps.getProperty("book.novel.regex", ""); }
     public List<String> adEntryTexts() { return getCandidates("ad.entry.text"); }
     public List<String> adWatchTexts() { return getCandidates("ad.watch.text"); }
     public List<String> adCloseTexts() { return getCandidates("ad.close.text"); }

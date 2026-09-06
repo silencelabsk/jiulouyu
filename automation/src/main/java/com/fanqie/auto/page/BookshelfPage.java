@@ -17,6 +17,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * 书架页面对象。
@@ -66,39 +68,45 @@ public class BookshelfPage extends BasePage {
         UiSnapshot snapshot = detector.tick();
         PageState currentState = detector.detect(snapshot);
 
-        // 已经在书架页，无需操作
+        // 注意：BOOKSHELF 检测依赖底部「书架」Tab 文案，而书城/短剧/赚钱等主 Tab 页同样含该文案，
+        // 故 currentState==BOOKSHELF 并不可靠（冷启动常停在书城首页却被误判为书架）。
+        // 这里始终主动点一次「书架」Tab 以真正确认落在书架页（已在书架时该点击为幂等空操作）。
         if (currentState == PageState.BOOKSHELF) {
-            log.info("[BookshelfPage] 当前已在书架页，无需切换");
-            return true;
+            log.info("[BookshelfPage] 检测到书架态，但底部 Tab 文案多页共享，仍主动点一次「书架」以确保");
         }
 
-        // 使用 LocatorSpec 走降级链点击书架 Tab
+        // 使用 LocatorSpec 走降级链定位书架 Tab 节点
         LocatorRegistry.LocatorSpec shelfSpec = locators.getShelfTab();
         Optional<UiNode> tabNode = resolve(shelfSpec, snapshot);
-        if (tabNode.isPresent()) {
-            clickNode(tabNode.get(), snapshot);
-            log.info("[BookshelfPage] 已点击书架 Tab 节点");
-        } else {
-            // L1 未命中，尝试用 shelfTabTexts() 直接做文案匹配
+
+        // L1 未命中，尝试用 shelfTabTexts() 直接做文案匹配
+        if (tabNode.isEmpty()) {
             List<String> shelfTexts = locators.shelfTabTexts();
-            boolean clicked = clickByTextCandidates(shelfTexts, snapshot);
-            if (!clicked) {
-                // 文案匹配也未命中，尝试在底部区域做几何查找
-                log.warn("[BookshelfPage] L1 文案匹配未命中书架 Tab，尝试底部区域几何查找");
-                List<UiNode> bottomNodes = snapshot.findClickableInRegion(0.0, 1.0, 0.85, 1.0, 0.1);
-                // 在底部可点击节点中找带「书架」文案的
-                Optional<UiNode> target = bottomNodes.stream()
-                        .filter(n -> shelfTexts.stream().anyMatch(t ->
-                                n.getText().contains(t) || n.getContentDesc().contains(t)))
-                        .findFirst();
-                if (target.isPresent()) {
-                    clickNode(target.get(), snapshot);
-                } else {
-                    log.error("[BookshelfPage] 无法定位书架 Tab");
-                    return false;
-                }
+            List<UiNode> textHits = snapshot.findByTextContains(shelfTexts);
+            if (!textHits.isEmpty()) {
+                tabNode = Optional.of(textHits.get(0));
             }
         }
+
+        // 文案匹配也未命中，尝试在底部区域做几何查找带「书架」文案的节点
+        if (tabNode.isEmpty()) {
+            log.warn("[BookshelfPage] L1 未命中书架 Tab，尝试底部区域几何查找");
+            List<String> shelfTexts = locators.shelfTabTexts();
+            List<UiNode> bottomNodes = snapshot.findClickableInRegion(0.0, 1.0, 0.85, 1.0, 0.15);
+            tabNode = bottomNodes.stream()
+                    .filter(n -> shelfTexts.stream().anyMatch(t ->
+                            n.getText().contains(t) || n.getContentDesc().contains(t)))
+                    .findFirst();
+        }
+
+        if (tabNode.isEmpty()) {
+            log.error("[BookshelfPage] 无法定位书架 Tab");
+            return false;
+        }
+
+        // 关键：华为全面屏底部 Tab 中心 y 落在系统导航手势区会被吞，改点图标上部避开手势区
+        tapTabAvoidingGesture(tabNode.get(), snapshot);
+        log.info("[BookshelfPage] 已点击书架 Tab 节点（避开底部手势区）");
 
         // 等待状态变为 BOOKSHELF
         try {
@@ -117,6 +125,31 @@ public class BookshelfPage extends BasePage {
             log.warn("[BookshelfPage] 切换到书架 Tab 后状态未确认: {}", afterState);
             return false;
         }
+    }
+
+    /**
+     * 真机校准：点击底部 Tab 时避开华为全面屏底部导航手势区。
+     * <p>
+     * 底部 Tab（书架/书城等）可点节点的中心 y≈2310 正落在系统全面屏手势区（约 y>2253），
+     * 普通点击会被导航手势吞掉、切不动 Tab（曾在真机复现：点书架反弹成视频「选集」层）。
+     * 故取该 Tab 可点节点 bounds 的「顶部 + 20% 高度」（图标上部，约 y≈2270）作为点击点，
+     * x 仍取中心。若节点无有效 bounds，退化为 {@link #clickNode} 原逻辑。
+     */
+    private void tapTabAvoidingGesture(UiNode tabNode, UiSnapshot snapshot) {
+        UiNode target = tabNode;
+        if (!tabNode.isClickable()) {
+            Optional<UiNode> ancestor = snapshot.nearestClickableAncestor(tabNode);
+            if (ancestor.isPresent()) target = ancestor.get();
+        }
+        if (!target.isHasBounds()) {
+            clickNode(tabNode, snapshot);
+            return;
+        }
+        UiNode.Rect b = target.getBounds();
+        int x = b.centerX();
+        int y = b.getTop() + (int) Math.round(b.height() * 0.20);
+        log.info("[BookshelfPage] 点书架 Tab 避开手势区: ({}, {}) bounds={}", x, y, b);
+        gestures.tapAtPixel(x, y);
     }
 
     /**
@@ -289,6 +322,8 @@ public class BookshelfPage extends BasePage {
         if (node == null) return "";
         if (node.hasContentDesc()) return node.getContentDesc().trim();
         if (node.hasText()) return node.getText().trim();
+        // 真机书封容器无 text/content-desc：退化用 bounds 做去重键，避免多本书轮换时全塌缩为空串
+        if (node.isHasBounds()) return node.getBounds().toString();
         return "";
     }
 
@@ -318,6 +353,29 @@ public class BookshelfPage extends BasePage {
 
         List<UiNode> allNodes = snapshot.nodes();
 
+        // 策略 0（真机 dump 校准）：番茄书架是网格，书封容器 clickable=true 但 text/content-desc 均为空
+        // （书名挂在子节点），无法被下面两个基于文案的策略命中。故优先按稳定 resource-id 命中书封容器。
+        // 书封约占屏 20%，超下方 0.15 面积上限；且底部 Tab 已由 id 天然排除，故中心 y 下限放宽到 0.90。
+        List<String> bookIds = locators.bookItemIds();
+        if (!bookIds.isEmpty()) {
+            List<UiNode> cells = allNodes.stream()
+                    .filter(UiNode::isClickable)
+                    .filter(UiNode::isHasBounds)
+                    .filter(n -> bookIds.contains(n.getResourceId()))
+                    .filter(n -> {
+                        double cy = (double) n.getBounds().centerY() / screenH;
+                        return cy > 0.10 && cy < 0.90;
+                    })
+                    .filter(n -> {
+                        double ratio = n.getBounds().areaRatio(screenW, screenH);
+                        return ratio > 0.01 && ratio < 0.30;
+                    })
+                    .filter(n -> !excludes.contains(bookIdOf(n)))
+                    .collect(Collectors.toList());
+            UiNode chosen = chooseNovelCell(snapshot, cells);
+            if (chosen != null) return Optional.of(chosen);
+        }
+
         // 策略 1：clickable=true 且带 content-desc（书名）
         Optional<UiNode> withDesc = allNodes.stream()
                 .filter(UiNode::isClickable)
@@ -339,6 +397,8 @@ public class BookshelfPage extends BasePage {
                     List<String> tabTexts = locators.shelfTabTexts();
                     return tabTexts.stream().noneMatch(desc::contains);
                 })
+                // 真机校准：兜底策略同样跳过短剧/视频节点（避免穿透到策略1/2 时误选短剧）
+                .filter(n -> !isShortDramaText(n.getText() + " " + n.getContentDesc()))
                 // D5：排除已用书籍
                 .filter(n -> !excludes.contains(bookIdOf(n)))
                 .findFirst();
@@ -363,9 +423,86 @@ public class BookshelfPage extends BasePage {
                     List<String> tabTexts = locators.shelfTabTexts();
                     return tabTexts.stream().noneMatch(text::contains);
                 })
+                // 真机校准：兜底策略同样跳过短剧/视频节点（避免穿透到策略2 时误选如「观看全集·52集」）
+                .filter(n -> !isShortDramaText(n.getText() + " " + n.getContentDesc()))
                 // D5：排除已用书籍
                 .filter(n -> !excludes.contains(bookIdOf(n)))
                 .findFirst();
+    }
+
+    /**
+     * 真机校准：从书封格候选中挑一本「文字小说」，跳过「短剧/视频」卡片。
+     * <p>
+     * 番茄书架把短剧与文字小说混排、书封容器 id 相同（e3l），仅靠 id/几何无法区分。
+     * 区分依据：看书封格子节点的文字——含短剧角标（第N集/全N集/选集等）则跳过；
+     * 含小说角标（万字/人在读/X.X分 等）则优先。两类都不命中时，退而取非短剧的最大格。
+     *
+     * @return 选中的书封节点；若全部被判定为短剧则返回 null（交由上层滞动重试）
+     */
+    private UiNode chooseNovelCell(UiSnapshot snapshot, List<UiNode> cells) {
+        if (cells == null || cells.isEmpty()) return null;
+        Pattern sd = compileSafe(locators.bookShortDramaRegex());
+        Pattern novel = compileSafe(locators.bookNovelRegex());
+        UiNode best = null;
+        boolean bestNovel = false;
+        long bestArea = -1;
+        for (UiNode cell : cells) {
+            String txt = collectTextWithin(snapshot, cell);
+            if (sd != null && sd.matcher(txt).find()) {
+                log.info("[BookshelfPage] 跳过疑似短剧/视频卡片: bounds={}", cell.getBounds());
+                continue;
+            }
+            boolean isNovel = novel != null && novel.matcher(txt).find();
+            long area = cell.getBounds().area();
+            // 优先 novel；同优先级取面积大者（正文网格书封，而非顶部窄条卡）
+            if ((isNovel && !bestNovel) || (isNovel == bestNovel && area > bestArea)) {
+                best = cell;
+                bestNovel = isNovel;
+                bestArea = area;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 收集书封格范围内（中心点落在格子 bounds 内）的全部 text/content-desc 拼接文本。
+     * 用于判断一个格子是短剧还是文字小说（书名/作者/字数/章节进度等子节点文字都落在格子矩形内）。
+     */
+    private String collectTextWithin(UiSnapshot snapshot, UiNode cell) {
+        UiNode.Rect b = cell.getBounds();
+        StringBuilder sb = new StringBuilder();
+        for (UiNode n : snapshot.nodes()) {
+            if (!n.isHasBounds()) continue;
+            if (!n.hasText() && !n.hasContentDesc()) continue;
+            UiNode.Rect nb = n.getBounds();
+            int cx = nb.centerX();
+            int cy = nb.centerY();
+            if (cx >= b.getLeft() && cx <= b.getRight() && cy >= b.getTop() && cy <= b.getBottom()) {
+                sb.append(n.getText()).append(' ').append(n.getContentDesc()).append(' ');
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 真机校准：判断一段文本是否命中短剧/视频特征（第N集/全N集/选集/看全集 等）。
+     * 供兜底策略（策略1/2）过滤短剧节点复用；正则未配置或非法时返回 false（不过滤）。
+     */
+    private boolean isShortDramaText(String text) {
+        if (text == null || text.isEmpty()) return false;
+        Pattern sd = compileSafe(locators.bookShortDramaRegex());
+        return sd != null && sd.matcher(text).find();
+    }
+
+    /** 安全编译正则：空串或非法正则返回 null（调用方按 null 跳过该维度）。 */
+    private Pattern compileSafe(String regex) {
+        if (regex == null || regex.isEmpty()) return null;
+        try {
+            return Pattern.compile(regex);
+        } catch (Exception e) {
+            log.warn("[BookshelfPage] 正则编译失败，忽略该规则: '{}' ({})", regex, e.getMessage());
+            return null;
+        }
     }
 
     private String truncate(String s, int maxLen) {
