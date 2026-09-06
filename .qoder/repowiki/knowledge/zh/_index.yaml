@@ -1,0 +1,28 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: main
+nodes_managed: true
+exported_at: "2026-09-06T15:50:46Z"
+modules:
+    "":
+        dir_name: Student Java 工程（含番茄免费小说 UI 自动化框架）
+        title: Student Java 工程（含番茄免费小说 UI 自动化框架）
+        scope:
+            - src/
+            - .gitignore
+            - Student.iml
+        source_files: []
+        children:
+            - automation_framework
+        depends_on: []
+        related_to: []
+    automation_framework:
+        dir_name: 番茄免费小说 UI 自动化框架
+        title: 番茄免费小说 UI 自动化框架
+        scope:
+            - automation/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []

@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: ""
+title: Student Java 工程（含番茄免费小说 UI 自动化框架）
+scope:
+    - src/
+    - .gitignore
+    - Student.iml
+source_files: []
+depends_on: []
+related_to: []

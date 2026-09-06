@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: automation_framework
+title: 番茄免费小说 UI 自动化框架
+scope:
+    - automation/
+source_files: []
+depends_on: []
+related_to: []
