@@ -20,6 +20,11 @@ import io.appium.java_client.AppiumDriver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -97,6 +102,9 @@ public class FanqieRunner {
         if (!doctorOnly) {
             printDeviceChecklist();
         }
+
+        // === 自动确保 Appium Server 已启动(探活→拉起→等待就绪) ===
+        ensureAppiumServerRunning();
 
         // === 环境自检 ===
         EnvDoctor doctor = new EnvDoctor(config);
@@ -289,6 +297,84 @@ public class FanqieRunner {
         System.out.println("│       「充电时保持唤醒」，把番茄小说加入电池优化白名单       │");
         System.out.println("└──────────────────────────────────────────────────────────────┘");
         System.out.println();
+    }
+
+    /**
+     * 自动确保 Appium Server 已就绪。
+     * <p>
+     * 幂等设计：先 HTTP GET /status 探活，已 running 则直接返回；
+     * 未运行时通过 ProcessBuilder 后台启动 appium --base-path /，
+     * 再轮询 /status 直到 ready:true 或超时(30s)。
+     * <p>
+     * 这样用户无需手动执行 start-appium.ps1，点运行按钮即可。
+     */
+    private static void ensureAppiumServerRunning() {
+        String serverUrl = "http://127.0.0.1:4723";
+        String statusUrl = serverUrl + "/status";
+        int timeoutSec = 30;
+        int pollIntervalMs = 1000;
+
+        HttpClient http = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(3))
+                .build();
+
+        // Step 1: 探活
+        if (isAppiumReady(http, statusUrl)) {
+            System.out.println("[Runner] Appium Server 已在运行且就绪 (" + serverUrl + ")");
+            return;
+        }
+
+        System.out.println("[Runner] Appium Server 未运行，正在自动启动...");
+
+        // Step 2: 后台启动
+        try {
+            ProcessBuilder pb = new ProcessBuilder("appium", "--base-path", "/");
+            pb.redirectOutput(ProcessBuilder.Redirect.toFile(
+                    new java.io.File(System.getProperty("java.io.tmpdir"), "appium-stdout.log")));
+            pb.redirectError(ProcessBuilder.Redirect.toFile(
+                    new java.io.File(System.getProperty("java.io.tmpdir"), "appium-stderr.log")));
+            pb.start();
+            System.out.println("[Runner] Appium 进程已启动(后台)，等待就绪...");
+        } catch (Exception e) {
+            System.err.println("[Runner] 启动 Appium Server 失败: " + e.getMessage());
+            System.err.println("[Runner] 请手动执行: appium --base-path /");
+            System.err.println("[Runner] 或检查 appium 是否已安装: npm list -g appium");
+            System.exit(1);
+            return;
+        }
+
+        // Step 3: 轮询等待就绪
+        for (int i = 0; i < timeoutSec; i++) {
+            try { Thread.sleep(pollIntervalMs); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+            if (isAppiumReady(http, statusUrl)) {
+                System.out.println("[Runner] Appium Server 已就绪 (" + serverUrl + ")");
+                return;
+            }
+            System.out.print(".");
+        }
+        System.out.println();
+        System.err.println("[Runner] Appium Server 在 " + timeoutSec + "s 内未就绪，请检查日志或手动启动");
+        System.exit(1);
+    }
+
+    /**
+     * HTTP GET /status 探测 Appium Server 是否 ready。
+     */
+    private static boolean isAppiumReady(HttpClient http, String statusUrl) {
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(statusUrl))
+                    .timeout(Duration.ofSeconds(3))
+                    .GET()
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() == 200) {
+                return resp.body().contains("\"ready\":true");
+            }
+        } catch (Exception ignored) {
+            // 连接失败 = 未运行
+        }
+        return false;
     }
 
     /**
