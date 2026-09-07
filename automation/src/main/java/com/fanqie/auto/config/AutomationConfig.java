@@ -286,6 +286,31 @@ public class AutomationConfig {
         return getLong("reader.swipe.duration.ms", 300L);
     }
 
+    // ==================== 阅读页内容区域 bounds（swipe 约束） ====================
+
+    public double contentTopRatio() {
+        return getDouble("reader.content.top.ratio", 0.10);
+    }
+
+    public double contentBottomRatio() {
+        return getDouble("reader.content.bottom.ratio", 0.88);
+    }
+
+    public double contentLeftRatio() {
+        return getDouble("reader.content.left.ratio", 0.02);
+    }
+
+    public double contentRightRatio() {
+        return getDouble("reader.content.right.ratio", 0.98);
+    }
+
+    // ==================== 日志清理 ====================
+
+    /** 日志保留天数：超过此天数的日志文件和快照文件在启动时自动清理，0 表示不清理 */
+    public int logRetentionDays() {
+        return getInt("log.retention.days", 3);
+    }
+
     // ==================== 验证与调试 ====================
 
     public boolean verifyPageTurnedByScreenshot() {

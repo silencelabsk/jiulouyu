@@ -328,11 +328,12 @@ public class FanqieRunner {
 
         // Step 2: 后台启动
         try {
+            java.io.File tmpDir = new java.io.File(System.getProperty("java.io.tmpdir"));
+            java.io.File stdoutLog = new java.io.File(tmpDir, "appium-stdout.log");
+            java.io.File stderrLog = new java.io.File(tmpDir, "appium-stderr.log");
             ProcessBuilder pb = new ProcessBuilder("appium", "--base-path", "/");
-            pb.redirectOutput(ProcessBuilder.Redirect.toFile(
-                    new java.io.File(System.getProperty("java.io.tmpdir"), "appium-stdout.log")));
-            pb.redirectError(ProcessBuilder.Redirect.toFile(
-                    new java.io.File(System.getProperty("java.io.tmpdir"), "appium-stderr.log")));
+            pb.redirectOutput(stdoutLog);
+            pb.redirectError(stderrLog);
             pb.start();
             System.out.println("[Runner] Appium 进程已启动(后台)，等待就绪...");
         } catch (Exception e) {

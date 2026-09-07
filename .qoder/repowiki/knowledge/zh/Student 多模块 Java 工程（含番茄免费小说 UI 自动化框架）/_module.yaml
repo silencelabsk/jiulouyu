@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: ""
-title: Student Java 工程（含番茄免费小说 UI 自动化框架）
+title: Student 多模块 Java 工程（含番茄免费小说 UI 自动化框架）
 scope:
     - src/
     - .gitignore

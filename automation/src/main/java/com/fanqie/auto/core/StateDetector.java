@@ -8,6 +8,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * 状态识别器：整个方案的性能核心。
@@ -96,7 +101,40 @@ public class StateDetector implements DriverAware {
      */
     public UiSnapshot tick() {
         long start = System.currentTimeMillis();
-        String xml = driver.getPageSource();
+        String xml = null;
+        // 首次超时时重试一次（给设备更多响应时间，书架/阅读器页 getPageSource 常慢）
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                ExecutorService executor = Executors.newSingleThreadExecutor();
+                try {
+                    Future<String> future = executor.submit(() -> driver.getPageSource());
+                    xml = future.get(20, TimeUnit.SECONDS);
+                    break; // 成功则跳出
+                } finally {
+                    executor.shutdownNow();
+                }
+            } catch (TimeoutException e) {
+                if (attempt == 0) {
+                    log.warn("[StateDetector] getPageSource 首次超时 (20s)，2s 后重试...");
+                    try { Thread.sleep(2000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+                } else {
+                    log.warn("[StateDetector] getPageSource 重试仍超时，返回空快照");
+                    return new UiSnapshot("",
+                        cachedScreenSize != null ? cachedScreenSize.getWidth() : 1080,
+                        cachedScreenSize != null ? cachedScreenSize.getHeight() : 2376);
+                }
+            } catch (Exception e) {
+                log.warn("[StateDetector] getPageSource 异常: {}", e.getMessage());
+                return new UiSnapshot("",
+                    cachedScreenSize != null ? cachedScreenSize.getWidth() : 1080,
+                    cachedScreenSize != null ? cachedScreenSize.getHeight() : 2376);
+            }
+        }
+        if (xml == null) {
+            return new UiSnapshot("",
+                cachedScreenSize != null ? cachedScreenSize.getWidth() : 1080,
+                cachedScreenSize != null ? cachedScreenSize.getHeight() : 2376);
+        }
         lastPageSourceMs = System.currentTimeMillis() - start;
 
         // E3：屏幕尺寸首次获取后缓存复用（尺寸通常不变），driver 刷新时自动重置

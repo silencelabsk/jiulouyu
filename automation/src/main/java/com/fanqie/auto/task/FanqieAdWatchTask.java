@@ -14,6 +14,7 @@ import com.fanqie.auto.page.AdFlowPage;
 import com.fanqie.auto.page.BookshelfPage;
 import com.fanqie.auto.page.ReaderPage;
 import io.appium.java_client.AppiumDriver;
+import org.openqa.selenium.Dimension;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -116,12 +117,13 @@ public class FanqieAdWatchTask implements Task, DriverAware {
         }
 
         // === 阶段 2：打开一本书进入阅读页 ===
-        // 真机校准：番茄书架混排「短剧」视频，误点会落入竖屏视频页而非阅读器。
-        // 故循环选书：若打开后判定为视频/短剧页 → 返回首页并重新点底部「书架」Tab → 换一本（排除已试）。
+        // 真机校准：
+        // 1. 点击书封后先打开书籍详情页，需左滑才能进入阅读器
+        // 2. uiautomator 在设备上崩溃，getPageSource 不可用，改用 activity 名称判定状态
+        // 3. 书架混排短剧视频，误点会落入视频页，需检测并换书
         log.info("[Task] 阶段 2：打开书架中的一本书（自动跳过短剧/视频页）");
         java.util.Set<String> triedIds = new java.util.LinkedHashSet<>();
         int maxPickAttempts = config.maxRecoveryRetry() + 3;
-        PageState readerState = PageState.UNKNOWN;
         boolean enteredReader = false;
         for (int pick = 0; pick < maxPickAttempts; pick++) {
             boolean opened = triedIds.isEmpty()
@@ -133,30 +135,35 @@ public class FanqieAdWatchTask implements Task, DriverAware {
             }
             String bookId = bookshelfPage.getLastOpenedBookId();
             triedIds.add(bookId);
-            UiSnapshot pickSnapshot = detector.tick();
-            readerState = detector.detect(pickSnapshot);
-            if (readerState.isReaderFamily()) {
-                logger.updateState(readerState);
+
+            // 左滑进入阅读器（从书籍详情页 → 阅读器）
+            bookshelfPage.swipeLeftToRead();
+
+            // 用 activity 名称验证是否进入阅读器（不依赖 getPageSource）
+            String activity = gestures.getCurrentActivity();
+            log.info("[Task] 开书+左滑后 activity: {}", activity);
+
+            if (activity != null && activity.contains("Reader")) {
                 stateMachine.markBookUsed(bookId);
-                log.info("[Task] 成功进入小说阅读页: {}", readerState);
+                log.info("[Task] 成功进入小说阅读页 (activity={})", activity);
                 enteredReader = true;
                 break;
             }
-            if (isVideoPage(pickSnapshot)) {
-                log.warn("[Task] 打开『{}』后落入视频/短剧页，返回首页并重新点击底部「书架」换一本",
-                        truncateId(bookId));
+
+            // 检查是否落入视频/短剧页（通过 activity 名称判断）
+            if (activity != null && (activity.contains("Video") || activity.contains("Drama")
+                    || activity.contains("Short") || activity.contains("Play"))) {
+                log.warn("[Task] 打开『{}』后落入视频/短剧页 (activity={})，返回首页换一本",
+                        truncateId(bookId), activity);
                 if (!backHomeAndReopenShelf()) {
                     log.warn("[Task] 返回首页并重点书架失败，终止选书");
                     break;
                 }
                 continue;
             }
-            log.warn("[Task] 打开书籍后状态为 {}（非阅读页家族、非视频），尝试恢复后重选", readerState);
-            boolean recovered = recoveryHandler.recover(readerState);
-            if (!recovered) {
-                log.error("[Task] 恢复失败，任务终止");
-                return false;
-            }
+
+            // 其他情况：可能在书架页（点击无效）或详情页（左滑未生效）
+            log.warn("[Task] 打开书籍后未进入阅读器 (activity={})，尝试下一本", activity);
         }
         if (!enteredReader) {
             log.error("[Task] 多次尝试仍无法进入小说阅读页（书架可能多为短剧/视频），任务终止");
@@ -195,111 +202,128 @@ public class FanqieAdWatchTask implements Task, DriverAware {
             }
 
             // === 内层：翻页 pagesPerCycle 次 ===
+            // 优化：不再每页调用 getPageSource/detect 检测状态（uiautomator 在设备上崩溃），
+            // 而是持续翻页，通过 activity 名称判断是否仍在阅读器。
+            // 翻不动了（activity 不再是 ReaderActivity）说明到了视频页或广告页。
+            // 防死循环：连续触发非阅读器 activity 超过阈值，认为当前页面有问题（可能点到了广告链接）
+            final int MAX_CONSECUTIVE_NON_READER = 2;
+            int consecutiveNonReaderCount = 0;
             pagesLoop:
             for (int page = 1; page <= pagesPerCycle; page++) {
                 log.info("[Task] 翻页 {}/{} (外层循环 {})", page, pagesPerCycle, cycle);
 
-                // 执行翻页并获取翻页后的状态
-                PageState afterTurn = readerPage.turnPage();
+                // 执行翻页手势（adb input tap/swipe，不依赖 uiautomator）
+                gestures.turnPageNext();
+                logger.incrementPageCount();
 
-                // 根据翻页后的状态决策
-                switch (afterTurn) {
-                    case READER:
-                    case READER_MENU:
-                        // 正常翻页（READER_MENU 是 READER 的可自愈子态，工具栏短暂可见），继续
-                        break;
+                // 短暂等待页面加载
+                try { Thread.sleep(2000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
 
-                    case AD_ENTRY_PROMPT:
-                    case AD_CONFIRM_DIALOG:
-                    case AD_VIDEO_PLAYING:
-                    case AD_CLOSE_READY:
-                    case AD_CONTINUE_PROMPT:
-                    case AD_REWARD_GRANTED:
-                        // 遇到广告相关状态，进入广告子循环
-                        log.info("[Task] 翻页后遇到广告状态: {}，进入广告子循环", afterTurn);
-                        boolean adSuccess = stateMachine.runAdSubLoop();
-                        if (!adSuccess) {
-                            log.warn("[Task] 广告子循环异常退出，尝试恢复");
-                            recoveryHandler.recover(afterTurn);
-                        }
-                        // 广告子循环结束后确认回到 READER
-                        ensureBackToReader();
-                        // D5：本书广告轮次达上限且全局目标未达 → 回书架换下一本书继续
-                        // C5.2：轮换失败可能把自己丢在书架，破坏「子循环后必在 READER」不变量；
-                        // 返回 false 时重新确认处于阅读页家族（含 READER_MENU），否则触发恢复，仍失败则跳过本轮翻页
-                        if (!rotateBookIfNeeded() && !confirmInReaderFamily()) {
-                            log.warn("[Task] 轮换后无法回到阅读页家族，跳过本轮翻页");
-                            break pagesLoop;
-                        }
-                        break;
+                // 通过 activity 名称检查是否仍在阅读器（不截图、不调 getPageSource）
+                String activity = gestures.getCurrentActivity();
 
-                    case CHAPTER_END:
-                        // 到达章节末尾，跳转下一章
-                        log.info("[Task] 到达章节末尾，跳转下一章");
-                        boolean nextChapter = readerPage.goNextChapter();
-                        if (!nextChapter) {
-                            log.warn("[Task] 跳转下一章失败，尝试恢复");
-                            recoveryHandler.recover(PageState.CHAPTER_END);
-                            ensureBackToReader();
-                        }
-                        break;
-
-                    case COMMON_POPUP:
-                    case UNKNOWN:
-                    case RECOVERY_NEEDED:
-                        // 异常状态，交 RecoveryHandler
-                        log.warn("[Task] 翻页后遇到异常状态: {}，交由 RecoveryHandler", afterTurn);
-                        boolean recovered = recoveryHandler.recover(afterTurn);
-                        if (!recovered) {
-                            log.error("[Task] 恢复失败，终止当前循环");
-                            return false;
-                        }
-                        ensureBackToReader();
-                        break;
-
-                    default:
-                        log.debug("[Task] 翻页后状态: {}，继续翻页", afterTurn);
-                        break;
+                if (activity != null && activity.contains("Reader")) {
+                    // 仍在阅读器，正常翻页，重置计数器
+                    log.debug("[Task] 翻页成功，仍在阅读器 (activity={})", activity);
+                    consecutiveNonReaderCount = 0;
+                    continue;
                 }
 
-                // 检查底部广告入口（即使翻页后状态为 READER，底部可能有入口浮层）
-                if (afterTurn.isReaderFamily()) {
-                    UiSnapshot currentSnapshot = detector.getCachedSnapshot();
-                    if (currentSnapshot != null && readerPage.hasBottomRewardEntry(currentSnapshot)) {
-                        // 检查是否需要进入广告流程
-                        if (stateMachine.getEarnedMinutes() < config.targetFreeMinutes()
-                                && stateMachine.getTotalAdRounds() < config.maxTotalAdRounds()) {
-                            log.info("[Task] 检测到底部广告入口，进入广告子循环");
-                            boolean clicked = readerPage.clickBottomRewardEntry();
-                            if (clicked) {
-                                stateMachine.runAdSubLoop();
-                                ensureBackToReader();
-                                // D5：广告子循环后按需轮换书籍
-                                // C5.2：轮换失败时重新确认阅读页家族，仍失败则跳过本轮翻页
-                                if (!rotateBookIfNeeded() && !confirmInReaderFamily()) {
-                                    log.warn("[Task] 轮换后无法回到阅读页家族，跳过本轮翻页");
-                                    break pagesLoop;
-                                }
-                            }
+                // activity 变化 → 离开阅读页（翻到视频页/广告弹窗等）
+                log.info("[Task] 翻页后 activity 变化: {} → 离开阅读页", activity);
+                consecutiveNonReaderCount++;
+                
+                // 防死循环：连续触发非阅读器 activity 超过阈值，停止翻页
+                if (consecutiveNonReaderCount > MAX_CONSECUTIVE_NON_READER) {
+                    log.warn("[Task] 连续 {} 次翻页触发非阅读器 activity，认为当前页面有问题，停止翻页",
+                            consecutiveNonReaderCount);
+                    break pagesLoop;
+                }
+
+                if (activity != null && (activity.contains("Ad") || activity.contains("Reward")
+                        || activity.contains("ad") || activity.contains("reward"))) {
+                    // 广告相关 activity → 暂时跳过广告子循环（getPageSource 不可用），直接尝试返回阅读器
+                    // TODO: 后续改造广告子循环为 activity 检测方式
+                    log.info("[Task] 检测到广告 activity: {}，跳过广告子循环（getPageSource 不可用），尝试返回阅读器", activity);
+                    // 尝试按返回回到阅读器
+                    try { driver.navigate().back(); } catch (Exception e) { /* ignore */ }
+                    try { Thread.sleep(2000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                    String afterBack = gestures.getCurrentActivity();
+                    if (afterBack != null && afterBack.contains("Reader")) {
+                        log.info("[Task] 按返回后回到阅读器，继续翻页");
+                    } else {
+                        // 返回不行，尝试返回首页重新打开书籍
+                        log.warn("[Task] 按返回后仍非阅读器 (activity={})，尝试返回首页重新打开书籍", afterBack);
+                        if (backHomeAndReopenShelf() && reopenFirstBook()) {
+                            log.info("[Task] 已重新打开书籍，继续翻页");
+                        } else {
+                            log.warn("[Task] 返回首页重新打开书籍失败，终止翻页");
+                            break pagesLoop;
                         }
                     }
+                } else if (activity != null && (activity.contains("Video") || activity.contains("Drama")
+                        || activity.contains("Short") || activity.contains("Play"))) {
+                    // 视频/短剧页 → 返回首页换书
+                    log.warn("[Task] 翻到视频/短剧页 (activity={})，返回首页换书", activity);
+                    if (!backHomeAndReopenShelf()) {
+                        log.warn("[Task] 返回首页并重新打开书架失败，终止翻页");
+                        break pagesLoop;
+                    }
+                } else {
+                    // 其他非阅读器状态（WebView/直播页等）→ 逐级恢复（不用 swipeDown，会打开下拉框）
+                    log.warn("[Task] 翻页后非阅读器状态 (activity={})，尝试恢复", activity);
+                    // 第 1 级：点击左上角返回箭头（很多子页面如 WebView/Live 有固定返回按钮）
+                    Dimension size = gestures.getScreenSize();
+                    int backArrowX = (int) (0.06 * size.getWidth());  // 左上角 ~60px
+                    int backArrowY = (int) (0.07 * size.getHeight()); // 状态栏下方 ~166px
+                    log.info("[Task] 点击左上角返回箭头: pixel=({}, {})", backArrowX, backArrowY);
+                    gestures.tapAtPixel(backArrowX, backArrowY);
+                    try { Thread.sleep(2000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                    String afterArrow = gestures.getCurrentActivity();
+                    if (afterArrow != null && afterArrow.contains("Reader")) {
+                        log.info("[Task] 点击左上角返回箭头后回到阅读器，继续翻页");
+                        continue;
+                    }
+                    // 第 2 级：系统返回键
+                    log.warn("[Task] 点击返回箭头后仍非阅读器 (activity={})，按系统返回键", afterArrow);
+                    try { driver.navigate().back(); } catch (Exception e) { /* ignore */ }
+                    try { Thread.sleep(2000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                    String afterBack = gestures.getCurrentActivity();
+                    if (afterBack != null && afterBack.contains("Reader")) {
+                        log.info("[Task] 按系统返回后回到阅读器，继续翻页");
+                        continue;
+                    }
+                    // 第 3 级：返回首页重新打开书籍
+                    log.warn("[Task] 返回箭头+系统返回均无效 (activity={})，尝试返回首页重新打开书籍", afterBack);
+                    if (backHomeAndReopenShelf() && reopenFirstBook()) {
+                        log.info("[Task] 已重新打开书籍，继续翻页");
+                        continue;
+                    }
+                    log.warn("[Task] 所有恢复手段均失败，终止翻页");
+                    break pagesLoop;
                 }
             }
 
-            // 一轮翻页结束后，如果还没达标，主动寻找底部广告入口
-            if (stateMachine.getEarnedMinutes() < config.targetFreeMinutes()) {
-                log.info("[Task] 本轮翻页结束，主动寻找底部广告入口");
-                UiSnapshot endSnapshot = detector.tick();
-                if (readerPage.hasBottomRewardEntry(endSnapshot)) {
-                    readerPage.clickBottomRewardEntry();
+            // 一轮翻页结束后，如果还没达标，尝试点击底部广告入口（坐标方式，不依赖 getPageSource）
+            if (stateMachine.getEarnedMinutes() < config.targetFreeMinutes()
+                    && stateMachine.getTotalAdRounds() < config.maxTotalAdRounds()) {
+                log.info("[Task] 本轮翻页结束，尝试点击底部广告入口（坐标方式）");
+                // 阅读器底部「看视频 免费看」按钮通常在屏幕底部中央
+                gestures.tapAtRatio(0.50, 0.95);
+                try { Thread.sleep(3000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+
+                String afterTap = gestures.getCurrentActivity();
+                if (afterTap != null && !afterTap.contains("Reader")) {
+                    // activity 变化 → 可能进入了广告流程
+                    log.info("[Task] 点击底部后 activity 变化: {}，可能进入广告流程", afterTap);
                     stateMachine.runAdSubLoop();
                     ensureBackToReader();
-                    // D5：广告子循环后按需轮换书籍
-                    // C5.2：轮换失败时重新确认阅读页家族，仍失败则优雅收尾退出外层循环
                     if (!rotateBookIfNeeded() && !confirmInReaderFamily()) {
                         log.warn("[Task] 轮换后无法回到阅读页家族，优雅收尾退出外层循环");
                         break;
                     }
+                } else {
+                    log.info("[Task] 点击底部后仍在阅读器，未检测到广告入口");
                 }
             }
         }
@@ -330,11 +354,21 @@ public class FanqieAdWatchTask implements Task, DriverAware {
             return false;
         }
 
-        // 等待到达书架或中间状态
+        // 等待 App 启动（使用 activity 检测代替 waitSupport.untilState，uiautomator 在设备上崩溃）
         try {
-            PageState launchState = waitSupport.untilState(config.appLaunchTimeoutMs(),
-                    PageState.BOOKSHELF, PageState.APP_LAUNCHING, PageState.SPLASH_AD,
-                    PageState.COMMON_POPUP);
+            long startTime = System.currentTimeMillis();
+            long timeout = config.appLaunchTimeoutMs();
+            PageState launchState = PageState.APP_LAUNCHING;
+            
+            while (System.currentTimeMillis() - startTime < timeout) {
+                String activity = gestures.getCurrentActivity();
+                if (activity != null && (activity.contains("Main") || activity.contains("bookshelf"))) {
+                    launchState = PageState.BOOKSHELF;
+                    break;
+                }
+                try { Thread.sleep(2000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+            }
+            
             logger.updateState(launchState);
             log.info("[Task] App 启动后状态: {}", launchState);
 
@@ -344,30 +378,30 @@ public class FanqieAdWatchTask implements Task, DriverAware {
                 return bookshelfPage.switchToShelfTab();
             }
 
-            // 处理中间状态
+            // 处理中间状态（使用 activity 检测代替 detector.tick()，uiautomator 在设备上崩溃）
             int maxAttempts = config.maxRecoveryRetry();
             for (int i = 0; i < maxAttempts; i++) {
-                UiSnapshot snapshot = detector.tick();
-                PageState state = detector.detect(snapshot);
+                String activity = gestures.getCurrentActivity();
+                log.info("[Task] App 启动中... (activity={})", activity);
 
-                switch (state) {
-                    case BOOKSHELF:
-                        log.info("[Task] 已到达书架页");
-                        return true;
-                    case SPLASH_AD:
-                        log.info("[Task] 检测到开屏广告，尝试关闭");
-                        adFlowPage.clickClose();
-                        break;
-                    case COMMON_POPUP:
-                        log.info("[Task] 检测到通用弹窗，尝试关闭");
-                        recoveryHandler.dismissPopup(snapshot);
-                        break;
-                    case APP_LAUNCHING:
-                        log.info("[Task] App 仍在启动中，等待...");
-                        break;
-                    default:
-                        log.info("[Task] 当前状态: {}，等待变为书架", state);
-                        break;
+                if (activity != null && (activity.contains("Main") || activity.contains("bookshelf"))) {
+                    log.info("[Task] 已到达书架页 (activity={})", activity);
+                    return bookshelfPage.switchToShelfTab();
+                }
+
+                // 检查是否是开屏广告
+                if (activity != null && (activity.contains("Ad") || activity.contains("Splash"))) {
+                    log.info("[Task] 检测到开屏广告，尝试坐标关闭");
+                    Dimension size = gestures.getScreenSize();
+                    int closeX = (int) (0.9 * size.getWidth());
+                    int closeY = (int) (0.1 * size.getHeight());
+                    gestures.tapAtPixel(closeX, closeY);
+                }
+
+                // 检查是否是通用弹窗
+                if (activity != null && (activity.contains("Dialog") || activity.contains("Popup"))) {
+                    log.info("[Task] 检测到通用弹窗，尝试按返回关闭");
+                    try { driver.navigate().back(); } catch (Exception e) { /* ignore */ }
                 }
 
                 // 等待状态变化
@@ -379,12 +413,7 @@ public class FanqieAdWatchTask implements Task, DriverAware {
                 }
             }
 
-            // 多次尝试后仍未到书架
-            UiSnapshot finalSnapshot = detector.tick();
-            PageState finalState = detector.detect(finalSnapshot);
-            if (finalState == PageState.BOOKSHELF) return bookshelfPage.switchToShelfTab();
-
-            // 尝试切换到书架 Tab
+            // 多次尝试后仍未到书架，尝试切换到书架 Tab
             log.info("[Task] 尝试主动切换到书架 Tab");
             return bookshelfPage.switchToShelfTab();
 
@@ -420,20 +449,44 @@ public class FanqieAdWatchTask implements Task, DriverAware {
         return p.matcher(sb.toString()).find();
     }
 
+    /** 截断书籍标识用于日志（避免过长标题刷屏）。 */
+    private String truncateId(String s) {
+        if (s == null) return "";
+        return s.length() <= 20 ? s : s.substring(0, 20) + "...";
+    }
+
     /**
-     * 返回首页（退出视频播放页）并重新点击底部「书架」Tab。
-     * <p>
-     * 用户诉求：误开短剧/视频后，先回到含底部导航栏的主页面，再强制点一次「书架」Tab 以回到书架换书。
+     * 确保回到阅读器（基于 activity 名称检测，不依赖 getPageSource）。
+     * 广告子循环结束后调用，确认仍在阅读器。
+     */
+    private void ensureBackToReader() {
+        String activity = gestures.getCurrentActivity();
+        if (activity != null && activity.contains("Reader")) {
+            return;
+        }
+        log.info("[Task] 广告子循环后不在阅读器 (activity={})，按返回尝试恢复", activity);
+        try { driver.navigate().back(); } catch (Exception e) { /* ignore */ }
+        try { Thread.sleep(2000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+        String afterBack = gestures.getCurrentActivity();
+        if (afterBack != null && afterBack.contains("Reader")) {
+            log.info("[Task] 按返回后已回到阅读器");
+        } else {
+            log.warn("[Task] 按返回后仍非阅读器 (activity={})", afterBack);
+        }
+    }
+
+    /**
+     * 从视频页面返回首页并重新打开书架 Tab。
+     * 通过 activity 名称判断是否回到主页面（不依赖 getPageSource）。
      *
-     * @return true=已回到书架, false=未能回到可导航主页面或切换书架失败
+     * @return true=已回到书架, false=未能回到
      */
     private boolean backHomeAndReopenShelf() {
         int maxBack = config.maxRecoveryRetry() + 1;
         for (int i = 0; i < maxBack; i++) {
-            UiSnapshot s = detector.tick();
-            PageState st = detector.detect(s);
-            if (st == PageState.BOOKSHELF) {
-                break; // 已在含书架锚点的主页面，直接走下面的强制点 Tab
+            String activity = gestures.getCurrentActivity();
+            if (activity != null && (activity.contains("Main") || activity.contains("bookshelf"))) {
+                break;
             }
             try {
                 driver.navigate().back();
@@ -451,77 +504,47 @@ public class FanqieAdWatchTask implements Task, DriverAware {
         return bookshelfPage.switchToShelfTab();
     }
 
-    /** 截断书籍标识用于日志（避免过长标题刷屏）。 */
-    private String truncateId(String s) {
-        if (s == null) return "";
-        return s.length() <= 20 ? s : s.substring(0, 20) + "...";
-    }
-
     /**
-     * 确保当前状态回到 READER。
-     * 如果不在 READER，尝试恢复。
-     */
-    private void ensureBackToReader() {
-        UiSnapshot snapshot = detector.tick();
-        PageState state = detector.detect(snapshot);
-
-        if (state.isReaderFamily()) {
-            logger.updateState(state);
-            return;
-        }
-
-        log.info("[Task] 广告子循环后状态为 {}，需要回到 READER", state);
-
-        // 如果在书架，重新打开书
-        if (state == PageState.BOOKSHELF) {
-            bookshelfPage.openAnyBook();
-            stateMachine.markBookUsed(bookshelfPage.getLastOpenedBookId());
-            return;
-        }
-
-        // 其他状态尝试恢复
-        if (state == PageState.COMMON_POPUP) {
-            recoveryHandler.dismissPopup(snapshot);
-            return;
-        }
-
-        // 尝试等待回到 READER
-        try {
-            PageState result = waitSupport.untilState(config.actionTimeoutMs(),
-                    PageState.READER, PageState.READER_MENU, PageState.BOOKSHELF);
-            logger.updateState(result);
-            if (result == PageState.BOOKSHELF) {
-                bookshelfPage.openAnyBook();
-                stateMachine.markBookUsed(bookshelfPage.getLastOpenedBookId());
-            }
-        } catch (Exception e) {
-            log.warn("[Task] 无法回到 READER，尝试恢复流程");
-            recoveryHandler.recover(state);
-        }
-    }
-
-    /**
-     * C5.2：轮换失败后的状态守卫——重新确认当前处于阅读页家族（READER / READER_MENU）。
-     * <p>
-     * rotateToNextBook 失败时可能停在书架（已 navigateBackToShelf 但无未用书），
-     * 直接继续翻页会破坏「子循环后必在 READER」不变量。本方法先 tick+detect 确认，
-     * 若不在阅读页家族则触发恢复并再次确认。
+     * 确认当前处于阅读页家族（基于 activity 名称检测，不依赖 getPageSource）。
      *
-     * @return true=已处于阅读页家族, false=恢复后仍无法回到阅读页家族
+     * @return true=已处于阅读页, false=恢复后仍无法回到阅读页
      */
     private boolean confirmInReaderFamily() {
-        UiSnapshot snapshot = detector.tick();
-        PageState state = detector.detect(snapshot);
-        if (state.isReaderFamily()) {
-            logger.updateState(state);
+        String activity = gestures.getCurrentActivity();
+        if (activity != null && activity.contains("Reader")) {
             return true;
         }
-        log.warn("[Task] 轮换后未处于阅读页家族（当前={}），尝试恢复", state);
-        recoveryHandler.recover(state);
-        snapshot = detector.tick();
-        state = detector.detect(snapshot);
-        logger.updateState(state);
-        return state.isReaderFamily();
+        log.warn("[Task] 未处于阅读页 (activity={})，按返回尝试恢复", activity);
+        try { driver.navigate().back(); } catch (Exception e) { /* ignore */ }
+        try { Thread.sleep(2000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+        activity = gestures.getCurrentActivity();
+        return activity != null && activity.contains("Reader");
+    }
+
+    /**
+     * 重新打开书架中的第一本书并进入阅读器。
+     * 用于评论层/浮层恢复失败后的兜底策略：下滑 → 返回 → 重新打开书籍。
+     *
+     * @return true=成功打开书籍并进入阅读器, false=失败
+     */
+    private boolean reopenFirstBook() {
+        log.info("[Task] 尝试重新打开书架第一本书");
+        // 点击书架网格第一本书（坐标方式）
+        boolean opened = bookshelfPage.openFirstBookByCoordinate();
+        if (!opened) {
+            log.warn("[Task] 坐标点击第一本书失败");
+            return false;
+        }
+        // 左滑进入阅读器
+        bookshelfPage.swipeLeftToRead();
+        try { Thread.sleep(2000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+        String activity = gestures.getCurrentActivity();
+        if (activity != null && activity.contains("Reader")) {
+            log.info("[Task] 重新打开书籍成功，已进入阅读器 (activity={})", activity);
+            return true;
+        }
+        log.warn("[Task] 重新打开书籍后未进入阅读器 (activity={})", activity);
+        return false;
     }
 
     // ==================== D5：多本书轮换 ====================
@@ -591,16 +614,16 @@ public class FanqieAdWatchTask implements Task, DriverAware {
 
     /**
      * D5：从阅读页返回书架。先逐级系统 back() 退出阅读页，仍不到书架则主动切换书架 Tab。
+     * 使用 activity 检测代替 detector.tick()（uiautomator 在设备上崩溃）。
      *
      * @return true=已回到书架, false=返回失败
      */
     private boolean navigateBackToShelf() {
         int maxBack = config.maxRecoveryRetry();
         for (int i = 0; i < maxBack; i++) {
-            UiSnapshot snapshot = detector.tick();
-            PageState state = detector.detect(snapshot);
-            if (state == PageState.BOOKSHELF) {
-                logger.updateState(state);
+            String activity = gestures.getCurrentActivity();
+            if (activity != null && (activity.contains("Main") || activity.contains("bookshelf"))) {
+                log.info("[Task] 已到达书架页 (activity={})", activity);
                 return true;
             }
             // 退出阅读页：系统 back()

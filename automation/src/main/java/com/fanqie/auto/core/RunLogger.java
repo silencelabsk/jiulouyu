@@ -149,10 +149,68 @@ public class RunLogger implements DriverAware {
      */
     public void start() {
         if (stopped.get()) return;
+        // 启动时清理过期日志和快照
+        cleanupOldFiles();
         int intervalSec = config.heartbeatIntervalSec();
         heartbeatFuture = heartbeatScheduler.scheduleAtFixedRate(
                 this::heartbeatTask, intervalSec, intervalSec, TimeUnit.SECONDS);
         writeLine("[心跳] 保活调度已启动，间隔=" + intervalSec + "s");
+    }
+
+    /**
+     * 清理过期日志和快照文件。
+     * 根据 log.retention.days 配置，删除超过保留天数的文件。
+     * 清理范围：logsDir 下的所有文件和 snapshotsDir 下的所有文件。
+     */
+    private void cleanupOldFiles() {
+        int retentionDays = config.logRetentionDays();
+        if (retentionDays <= 0) {
+            writeLine("[清理] 日志清理已禁用 (retention=0)");
+            return;
+        }
+        long cutoffMs = System.currentTimeMillis() - retentionDays * 24L * 60 * 60 * 1000;
+        int deletedCount = 0;
+        long freedBytes = 0;
+        // 清理 logsDir 下的文件（不含 snapshots 子目录，单独处理）
+        try {
+            File[] files = logsDir.toFile().listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    if (f.isFile() && f.lastModified() < cutoffMs) {
+                        long size = f.length();
+                        if (f.delete()) {
+                            deletedCount++;
+                            freedBytes += size;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            writeLine("[清理] logsDir 清理异常: " + e.getMessage());
+        }
+        // 清理 snapshotsDir 下的文件
+        try {
+            File[] snapFiles = snapshotsDir.toFile().listFiles();
+            if (snapFiles != null) {
+                for (File f : snapFiles) {
+                    if (f.isFile() && f.lastModified() < cutoffMs) {
+                        long size = f.length();
+                        if (f.delete()) {
+                            deletedCount++;
+                            freedBytes += size;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            writeLine("[清理] snapshotsDir 清理异常: " + e.getMessage());
+        }
+        if (deletedCount > 0) {
+            writeLine(String.format("[清理] 已删除 %d 个过期文件 (保留 %d 天)，释放 %.1f KB",
+                    deletedCount, retentionDays, freedBytes / 1024.0));
+        } else {
+            writeLine("[清理] 无需清理 (所有文件在保留期内)");
+        }
     }
 
     /**

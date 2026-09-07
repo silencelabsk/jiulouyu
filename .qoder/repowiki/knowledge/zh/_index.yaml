@@ -3,11 +3,11 @@ schema_version: 1
 locale: zh-CN
 branch: main
 nodes_managed: true
-exported_at: "2026-09-06T15:50:46Z"
+exported_at: "2026-09-07T12:57:29Z"
 modules:
     "":
-        dir_name: Student Java 工程（含番茄免费小说 UI 自动化框架）
-        title: Student Java 工程（含番茄免费小说 UI 自动化框架）
+        dir_name: Student 多模块 Java 工程（含番茄免费小说 UI 自动化框架）
+        title: Student 多模块 Java 工程（含番茄免费小说 UI 自动化框架）
         scope:
             - src/
             - .gitignore

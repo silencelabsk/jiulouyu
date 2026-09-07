@@ -105,7 +105,8 @@ public class AppiumUiAutomator2DriverFactory implements DriverFactory {
         try {
             driver.quit();
             log.info("[DriverFactory] Session 已正常退出");
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // 捕获 Throwable 而非 Exception：selenium-devtools 缺失时 quit() 会抛 NoClassDefFoundError
             log.warn("[DriverFactory] 退出 session 时异常（可忽略）: {}", e.getMessage());
         } finally {
             driver = null;

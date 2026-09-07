@@ -22,6 +22,9 @@ public enum PageState {
     /** 书架页面（底部 Tab 可见、书籍列表可见） */
     BOOKSHELF("书架页"),
 
+    /** 书籍详情页（书封/评分/简介，需左滑进入阅读器） */
+    BOOK_DETAIL("书籍详情页"),
+
     /** 阅读页面（正文显示中，无菜单/弹窗覆盖） */
     READER("阅读页"),
 
@@ -86,7 +89,7 @@ public enum PageState {
      * 统一把 READER_MENU 视作 READER 的可自愈子态，语义跨层保持一致。
      */
     public boolean isReaderFamily() {
-        return this == READER || this == READER_MENU;
+        return this == READER || this == READER_MENU || this == BOOK_DETAIL;
     }
 
     @Override
