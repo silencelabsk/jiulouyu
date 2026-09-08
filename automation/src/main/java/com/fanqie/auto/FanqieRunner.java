@@ -8,6 +8,7 @@ import com.fanqie.auto.core.DriverRegistry;
 import com.fanqie.auto.core.EnvDoctor;
 import com.fanqie.auto.core.GestureSupport;
 import com.fanqie.auto.core.RunLogger;
+import com.fanqie.auto.core.ScreenLocator;
 import com.fanqie.auto.core.StateDetector;
 import com.fanqie.auto.core.WaitSupport;
 import com.fanqie.auto.page.AdFlowPage;
@@ -159,6 +160,10 @@ public class FanqieRunner {
             detector.setLogger(logger);
             WaitSupport waitSupport = new WaitSupport(driver, config, detector);
 
+            // === 装配 ScreenLocator（基于 UI 层级分析 + OCR 的智能定位器） ===
+            ScreenLocator screenLocator = new ScreenLocator(driver, config, locators, gestures, logger);
+            log.info("[Runner] ScreenLocator 初始化完成，OCR 可用: {}", screenLocator.isOcrAvailable());
+
             // === 创建 DriverRegistry 并注册所有实现了 DriverAware 的组件 ===
             // session 重建后由 RecoveryHandler 调用 registry.refreshAll(newDriver) 统一刷新引用
             DriverRegistry registry = new DriverRegistry();
@@ -166,6 +171,7 @@ public class FanqieRunner {
             registry.register(detector);
             registry.register(waitSupport);
             registry.register(logger);
+            registry.register(screenLocator);
 
             // === Dry-run 模式：只探测不点击 ===
             if (dryRun || config.dryRun()) {
@@ -185,6 +191,11 @@ public class FanqieRunner {
                     gestures, logger, detector, waitSupport);
             AdFlowPage adFlowPage = new AdFlowPage(driver, config, locators,
                     gestures, logger, detector, waitSupport);
+
+            // === 注入 ScreenLocator 到 page 层（setter 注入，避免修改构造函数链） ===
+            bookshelfPage.setScreenLocator(screenLocator);
+            readerPage.setScreenLocator(screenLocator);
+            adFlowPage.setScreenLocator(screenLocator);
 
             // === 装配 task 层 ===
             RecoveryHandler recoveryHandler = new RecoveryHandler(driver, config, locators,

@@ -80,6 +80,17 @@
             <version>${junit.jupiter.version}</version>
             <scope>test</scope>
         </dependency>
+
+        <!--
+            Tess4J：Tesseract OCR 的 Java 封装，用于屏幕文字识别。
+            支持中文识别（需要 chi_sim 训练数据）。
+            注意：需要本地安装 Tesseract 或提供 tessdata 目录。
+        -->
+        <dependency>
+            <groupId>net.sourceforge.tess4j</groupId>
+            <artifactId>tess4j</artifactId>
+            <version>5.11.0</version>
+        </dependency>
     </dependencies>
 
     <!-- 阿里云镜像：国内显著快于 Maven Central 直连（实测可达） -->

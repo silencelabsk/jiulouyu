@@ -5,6 +5,7 @@ import com.fanqie.auto.config.LocatorRegistry;
 import com.fanqie.auto.core.GestureSupport;
 import com.fanqie.auto.core.PageState;
 import com.fanqie.auto.core.RunLogger;
+import com.fanqie.auto.core.ScreenLocator;
 import com.fanqie.auto.core.StateDetector;
 import com.fanqie.auto.core.UiNode;
 import com.fanqie.auto.core.UiSnapshot;
@@ -237,8 +238,25 @@ public class AdFlowPage extends BasePage {
             }
         }
 
+        // === L3.5：ScreenLocator 补充 ===
+        if (screenLocator != null) {
+            log.info("[AdFlowPage] L3 未命中，尝试 ScreenLocator 定位关闭按钮");
+            // 在右上角区域通过 ScreenLocator 查找关闭按钮
+            List<String> closeCandidates = new java.util.ArrayList<>(locators.adCloseTexts());
+            closeCandidates.addAll(java.util.Arrays.asList("关闭", "跳过", "×", "close"));
+            if (screenLocator.findAndClickByCandidates(closeCandidates)) {
+                log.info("[AdFlowPage] ScreenLocator 成功定位并点击关闭按钮");
+                return true;
+            }
+            // ScreenLocator 区域兜底：点击右上角区域
+            if (screenLocator.findAndClickInRegion(0.85, 1.0, 0.0, 0.15)) {
+                log.info("[AdFlowPage] ScreenLocator 区域点击成功（右上角）");
+                return true;
+            }
+        }
+
         // === L4：系统兜底 ===
-        log.warn("[AdFlowPage] L1/L2/L3 全部未命中，启用 L4 系统兜底");
+        log.warn("[AdFlowPage] L1/L2/L3/ScreenLocator 全部未命中，启用 L4 系统兜底");
         if (systemBack()) {
             // back 后检测状态是否已离开广告页
             try {
@@ -264,13 +282,13 @@ public class AdFlowPage extends BasePage {
     /**
      * 点击「继续获取免费时长」按钮。
      * <p>
-     * <b>仅使用 L1 语义属性匹配</b>（allowGeometryFallback=false）。
-     * 禁用几何兜底的原因：误点此按钮会多看一轮视频、浪费用户每日的时长配额。
+     * 定位策略：L1 语义属性 → ScreenLocator（UI 层级 + OCR）。
+     * 禁用 L2 几何兜底（allowGeometryFallback=false），但启用 ScreenLocator 作为补充。
      *
-     * @return true=成功点击, false=L1 未命中
+     * @return true=成功点击, false=全部未命中
      */
     public boolean clickContinueGetFreeTime() {
-        log.info("[AdFlowPage] 尝试点击「继续获取免费时长」按钮（仅 L1）");
+        log.info("[AdFlowPage] 尝试点击「继续获取免费时长」按钮（L1 + ScreenLocator）");
 
         UiSnapshot snapshot = detector.tick();
         LocatorRegistry.LocatorSpec continueSpec = locators.getAdContinue();
@@ -291,8 +309,21 @@ public class AdFlowPage extends BasePage {
             return true;
         }
 
+        // ★ ScreenLocator 补充：通过 UI 层级分析 + OCR 查找按钮文字
+        if (screenLocator != null) {
+            log.info("[AdFlowPage] L1 未命中，尝试 ScreenLocator 定位「继续获取免费时长」按钮");
+            // 扩展候选集，覆盖更多运营文案变体
+            java.util.List<String> ocrCandidates = new java.util.ArrayList<>(continueTexts);
+            ocrCandidates.addAll(java.util.Arrays.asList(
+                    "领取奖励", "继续观看", "继续获取", "再看一个", "立即领取"));
+            if (screenLocator.findAndClickByCandidates(ocrCandidates)) {
+                log.info("[AdFlowPage] ScreenLocator 成功定位并点击「继续获取免费时长」按钮");
+                return true;
+            }
+        }
+
         // ★ 不执行 L2 几何兜底：allowGeometryFallback=false
-        log.warn("[AdFlowPage] L1 未命中「继续获取免费时长」按钮，且几何兜底被禁止（防误点浪费配额）");
+        log.warn("[AdFlowPage] L1 + ScreenLocator 均未命中「继续获取免费时长」按钮，且几何兜底被禁止（防误点浪费配额）");
         return false;
     }
 

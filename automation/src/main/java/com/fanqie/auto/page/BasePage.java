@@ -5,6 +5,7 @@ import com.fanqie.auto.config.LocatorRegistry;
 import com.fanqie.auto.core.DriverAware;
 import com.fanqie.auto.core.GestureSupport;
 import com.fanqie.auto.core.RunLogger;
+import com.fanqie.auto.core.ScreenLocator;
 import com.fanqie.auto.core.UiNode;
 import com.fanqie.auto.core.UiSnapshot;
 import io.appium.java_client.AppiumDriver;
@@ -58,6 +59,9 @@ public class BasePage implements DriverAware {
     protected final GestureSupport gestures;
     protected final RunLogger logger;
 
+    /** ScreenLocator：基于 UI 层级分析 + OCR 的智能定位器（可选，由 FanqieRunner 注入） */
+    protected volatile ScreenLocator screenLocator;
+
     public BasePage(AppiumDriver driver, AutomationConfig config, LocatorRegistry locators,
                     GestureSupport gestures, RunLogger logger) {
         this.driver = driver;
@@ -65,6 +69,16 @@ public class BasePage implements DriverAware {
         this.locators = locators;
         this.gestures = gestures;
         this.logger = logger;
+    }
+
+    /** 注入 ScreenLocator（由 FanqieRunner 在装配阶段调用） */
+    public void setScreenLocator(ScreenLocator screenLocator) {
+        this.screenLocator = screenLocator;
+    }
+
+    /** 获取 ScreenLocator（可能为 null） */
+    public ScreenLocator getScreenLocator() {
+        return screenLocator;
     }
 
     @Override
